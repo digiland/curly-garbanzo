@@ -1,0 +1,89 @@
+# JupyterHub on single-node k3s, 7 x MIG 1g.18gb slices on one H200.
+
+hub:
+  image:
+    name: local/k8s-hub-native      # custom: stock hub + jupyterhub-nativeauthenticator
+    tag: "4.4.2"                    # MUST match chart version
+    pullPolicy: Never               # image lives in k3s containerd, not a registry
+  config:
+    JupyterHub:
+      authenticator_class: nativeauthenticator.NativeAuthenticator
+      admin_access: true
+    Authenticator:
+      # JupyterHub 5 defaults allow_all=False, and an empty allowed_users no
+      # longer means "everyone" -> every login is refused with "not allowed".
+      # NativeAuthenticator does its own gating (is_authorized / admin approval),
+      # so delegate to it. Approval is still required; this is not open access.
+      allow_all: true
+      admin_users:
+        - admin
+    NativeAuthenticator:
+      open_signup: false            # admin approves each signup at /hub/authorize
+      minimum_password_length: 10
+      check_common_password: true
+  extraConfig:
+    # JupyterHub 5.5's LoginHandler.render_template intercepts error.html on POST
+    # and routes it into _render(**ns). NativeAuthenticator overrides _render(), which
+    # (a) has no `sync` parameter and (b) returns a coroutine -- so synchronous error
+    # rendering raises and the user gets a bare, body-less HTTP 403 instead of
+    # "Login form invalid or expired. Try again."  Bypass the interception: render
+    # error pages through the base implementation, which honours sync=True.
+    01-nativeauth-render-fix: |
+      from jupyterhub.handlers.base import BaseHandler as _JHBase
+      from nativeauthenticator.handlers import LoginHandler as _NALoginHandler
+      _NALoginHandler.render_template = _JHBase.render_template
+    00-nativeauth: |
+      import os, nativeauthenticator
+      c.JupyterHub.template_paths = [
+          f"{os.path.dirname(nativeauthenticator.__file__)}/templates/"
+      ]
+
+proxy:
+  service:
+    type: ClusterIP                 # servicelb is disabled; cloudflared reaches this in-cluster
+
+singleuser:
+  image:
+    name: local/pytorch-caimex       # pytorch-notebook + caimex CLI preinstalled
+    tag: cuda12
+    pullPolicy: Never                # local image in k3s containerd, not a registry
+  extraEnv:
+    # Shared caimex credential. Read at start by
+    # /usr/local/bin/before-notebook.d/10-caimex.sh, which writes it to
+    # ~/.local/share/caimex-code/auth.json (the env var alone is NOT accepted).
+    CAIMEX_API_KEY:
+      valueFrom:
+        secretKeyRef:
+          name: caimex-credentials
+          key: api-key
+    CAIMEX_MODEL: "caimex/Caimex2/deepseek-ai/DeepSeek-V4-Flash"
+  extraPodConfig:
+    runtimeClassName: nvidia        # required so the MIG device is injected
+  extraResource:
+    limits:
+      nvidia.com/gpu: "1"           # one MIG slice; migStrategy=single makes this uniform
+  cpu:
+    limit: 3
+    guarantee: 0.5
+  memory:
+    limit: 28G
+    guarantee: 2G
+  storage:
+    type: dynamic
+    capacity: 30Gi
+    dynamic:
+      storageClass: local-path      # k3s built-in provisioner
+  startTimeout: 600
+  defaultUrl: /lab
+
+# Idle culling is mandatory: 7 slices total, an idle notebook holds one forever.
+cull:
+  enabled: true
+  users: true
+  timeout: 3600                     # 1h idle -> shut down, releasing the GPU
+  every: 300
+  maxAge: 0
+
+scheduling:
+  userScheduler:
+    enabled: false                  # single node; nothing to spread across

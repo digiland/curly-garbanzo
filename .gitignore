@@ -1,0 +1,8 @@
+# Never commit credentials. Both are supplied at deploy time as k8s secrets.
+.env
+*.token
+*secret*.yaml
+!k8s/cloudflared.yaml
+auth.json
+kubeconfig
+*.log

@@ -1,0 +1,19 @@
+[Unit]
+Description=Recreate NVIDIA MIG layout (7 x 1g.18gb)
+Documentation=file:///usr/local/bin/mig-setup.sh
+# Normal dependencies: guarantees sysinit/udev have run and /dev/nvidia* exist.
+After=basic.target nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+# k3s must not enumerate GPUs before the layout is rebuilt.
+Before=k3s.service containerd.service docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/mig-setup.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
