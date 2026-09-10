@@ -1,0 +1,37 @@
+#!/bin/bash
+# Thin, discoverable wrapper over rclone for the user's own object-storage
+# prefix. Exists because `rclone --config ... myspace:` is a lot to remember,
+# and the Colab equivalent people expect is a single verb.
+set -euo pipefail
+
+if [ -z "${S3_ENDPOINT:-}" ]; then
+    echo "Object storage is not configured on this deployment." >&2
+    exit 1
+fi
+
+usage() {
+    cat <<'EOF'
+Usage: spaces <command> [args]
+
+  ls [path]            list your object storage
+  get <remote> [local] download from your space
+  put <local> [remote] upload to your space
+  sync <local> <remote> make remote match local (deletes extras remotely)
+  du                   show how much you are storing
+  url <remote>         printable path for sharing with an admin
+
+Your space is private to you. Everything lives under users/$JUPYTERHUB_USER/.
+EOF
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    ls)   rclone lsf "myspace:${1:-}" ;;
+    get)  rclone copy "myspace:$1" "${2:-.}" --progress ;;
+    put)  rclone copy "$1" "myspace:${2:-}" --progress ;;
+    sync) rclone sync "$1" "myspace:$2" --progress ;;
+    du)   rclone size "myspace:" ;;
+    url)  echo "s3://${S3_BUCKET}/users/${JUPYTERHUB_USER}/${1:-}" ;;
+    ""|-h|--help|help) usage ;;
+    *) echo "unknown command: $cmd" >&2; usage >&2; exit 2 ;;
+esac

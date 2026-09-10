@@ -1,0 +1,129 @@
+{% extends "templates/page.html" %}
+{#
+  Shadows nativeauthenticator/templates/page.html, which is itself only a two-line
+  override adding the Change Password / Authorize Users nav links. Because our
+  template_paths entry comes first, every page that does `{% extends "page.html" %}`
+  -- native-login, signup, authorization-area, change-password -- inherits this
+  instead, so the whole surface is themed from one file. The nav links are
+  reproduced below; dropping them would silently remove admins' route to
+  /hub/authorize.
+#}
+
+{% block stylesheet %}
+{{ super() }}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --fz-brand:      #0f766e;
+    --fz-brand-dark: #115e59;
+    --fz-ink:        #0f172a;
+    --fz-muted:      #64748b;
+    --fz-line:       #e2e8f0;
+    --fz-surface:    #ffffff;
+    --fz-canvas:     #f1f5f9;
+  }
+  /* JupyterHub 5 ships a Bootstrap 5 theme toggle; honour it rather than
+     forcing a light page onto someone who chose dark. */
+  [data-bs-theme="dark"] {
+    --fz-brand:   #2dd4bf;
+    --fz-ink:     #e2e8f0;
+    --fz-muted:   #94a3b8;
+    --fz-line:    #334155;
+    --fz-surface: #1e293b;
+    --fz-canvas:  #0f172a;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: var(--fz-canvas);
+    color: var(--fz-ink);
+  }
+
+  .navbar { border-bottom: 1px solid var(--fz-line); background: var(--fz-surface) !important; }
+  .navbar a { color: var(--fz-ink) !important; }
+  .navbar a:hover { color: var(--fz-brand) !important; }
+
+  /* Auth cards: login, signup, change-password */
+  #login-main, #signup-main {
+    max-width: 26rem; margin: 3.5rem auto; padding: 0;
+  }
+  .auth-form-header {
+    background: linear-gradient(135deg, var(--fz-brand), var(--fz-brand-dark));
+    color: #fff; font-size: 1.15rem; font-weight: 600;
+    padding: 1.1rem 1.5rem; border-radius: 12px 12px 0 0;
+    text-align: left; border: 0;
+  }
+  .auth-form-body {
+    background: var(--fz-surface); border: 1px solid var(--fz-line); border-top: 0;
+    border-radius: 0 0 12px 12px; padding: 1.5rem;
+    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 8px 24px rgba(15,23,42,.05);
+  }
+  .auth-form-body label { font-weight: 500; font-size: .875rem; margin-bottom: .25rem; }
+  .auth-form-body .form-control {
+    border-radius: 8px; border: 1px solid var(--fz-line);
+    padding: .55rem .75rem; background: var(--fz-canvas); color: var(--fz-ink);
+  }
+  .auth-form-body .form-control:focus {
+    border-color: var(--fz-brand); background: var(--fz-surface);
+    box-shadow: 0 0 0 3px rgba(15,118,110,.15); outline: 0;
+  }
+  .auth-form-body .btn-jupyter,
+  .auth-form-body input[type="submit"],
+  .auth-form-body button[type="submit"] {
+    background: var(--fz-brand); border: 0; color: #fff; font-weight: 600;
+    border-radius: 8px; padding: .6rem 1rem; width: 100%; margin-top: .5rem;
+  }
+  .auth-form-body .btn-jupyter:hover,
+  .auth-form-body input[type="submit"]:hover,
+  .auth-form-body button[type="submit"]:hover { background: var(--fz-brand-dark); }
+
+  .login_error, .error { color: #b91c1c; font-size: .875rem; font-weight: 500; }
+  [data-bs-theme="dark"] .login_error { color: #fca5a5; }
+
+  /* Guidance text injected by fz-help blocks below the forms. */
+  .fz-help {
+    max-width: 26rem; margin: 1rem auto 0; font-size: .8125rem;
+    color: var(--fz-muted); line-height: 1.5; text-align: center;
+  }
+  .fz-help a { color: var(--fz-brand); text-decoration: none; font-weight: 500; }
+  .fz-help a:hover { text-decoration: underline; }
+
+  .announcement { border-radius: 10px; max-width: 46rem; margin: 1.5rem auto 0; }
+
+  /* Spawn-options profile list: make the choice legible instead of bare radios,
+     since picking CPU-only here is what keeps a MIG slice free for someone else. */
+  .profile { border: 1px solid var(--fz-line); border-radius: 10px;
+             padding: .9rem 1.1rem; margin-bottom: .75rem; background: var(--fz-surface); }
+  .profile:hover { border-color: var(--fz-brand); }
+  .profile-item .profile label { font-weight: 600; }
+  .profile .profile-name { font-weight: 600; }
+  .profile .profile-description { color: var(--fz-muted); font-size: .875rem; }
+</style>
+{% endblock stylesheet %}
+
+{% block nav_bar_left_items %}
+    {{ super() }}
+    <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change Password</a></li>
+    {% if user and user.admin %}
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Authorize Users</a></li>
+    {% endif %}
+{% endblock %}
+
+{% block footer %}
+{{ super() }}
+{# Shown only to logged-out visitors, i.e. the login / signup / change-password
+   pages. Gating on `user` rather than on the request path because JupyterHub's
+   template namespace has no `request` object -- referencing one raises
+   UndefinedError and turns every auth page into a 500. Login-specific copy goes
+   through announcement_login instead (set in extraConfig); NativeAuthenticator's
+   signup.html has no equivalent hook, so this block carries the signup rules. #}
+{% if user is not defined or not user %}
+  <div class="fz-help">
+    Accounts need administrator approval before first sign-in, and you'll be
+    emailed when yours is active.<br>
+    Usernames must be lowercase letters, digits or hyphens (3–31 characters).
+  </div>
+{% endif %}
+{% endblock footer %}
