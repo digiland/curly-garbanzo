@@ -1,0 +1,41 @@
+# Lets a notebook submit and watch its own training jobs.
+#
+# Without this the submission cell in ~/examples/distributed-training.ipynb ends
+# in a 403: singleuser pods run under the namespace's `default` ServiceAccount,
+# which has no rights over PyTorchJobs.
+#
+# Deliberately narrow. Users can create, watch and delete jobs and read pods and
+# logs in this namespace -- they cannot touch the hub, its secrets, or anything
+# outside jupyterhub. Note this is namespace-wide: any user can delete another
+# user's job. For per-user isolation, spawn each user into their own namespace
+# and template this per namespace instead.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: notebook-job-submitter
+  namespace: jupyterhub
+rules:
+  - apiGroups: ["kubeflow.org"]
+    resources: ["pytorchjobs", "pytorchjobs/status"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["workloads", "localqueues"]
+    verbs: ["get", "list", "watch"]           # "why is my job still queued?"
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: notebook-job-submitter
+  namespace: jupyterhub
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: notebook-job-submitter
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: jupyterhub

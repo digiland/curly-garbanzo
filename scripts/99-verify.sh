@@ -6,11 +6,43 @@ EXPECT="${MIG_COUNT:-7}"
 fail=0
 chk() { printf '  %-42s %s\n' "$1" "$2"; [ "$3" = ok ] || fail=1; }
 
-n=$(nvidia-smi -L 2>/dev/null | grep -c 'MIG ' || echo 0)
-chk "MIG instances" "$n / $EXPECT" "$([ "$n" = "$EXPECT" ] && echo ok || echo bad)"
+# On one node this is the local MIG layout. On a cluster nvidia-smi only sees
+# this host, so the local check is skipped and the cluster-wide allocatable
+# total is what matters -- `.items[0]` would report one node's slices as if they
+# were the whole cluster.
+NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
 
-a=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo 0)
-chk "nvidia.com/gpu allocatable" "${a:-0} / $EXPECT" "$([ "${a:-0}" = "$EXPECT" ] && echo ok || echo bad)"
+if [ "${NODES:-1}" -le 1 ]; then
+    n=$(nvidia-smi -L 2>/dev/null | grep -c 'MIG ' || echo 0)
+    chk "MIG instances" "$n / $EXPECT" "$([ "$n" = "$EXPECT" ] && echo ok || echo bad)"
+else
+    printf '  %-42s %s\n' "cluster nodes" "$NODES"
+fi
+
+# Sum over every node, not just the first.
+a=$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' 2>/dev/null \
+    | awk '{s+=$1} END{print s+0}')
+if [ "${NODES:-1}" -le 1 ]; then
+    chk "nvidia.com/gpu allocatable" "${a:-0} / $EXPECT" "$([ "${a:-0}" = "$EXPECT" ] && echo ok || echo bad)"
+else
+    chk "nvidia.com/gpu allocatable (cluster)" "${a:-0}" "$([ "${a:-0}" -ge 1 ] && echo ok || echo bad)"
+
+    # Every node must carry a pool label: an unlabelled node matches no profile
+    # in the cluster overlay and silently accepts no user servers at all.
+    un=$(kubectl get nodes -L caimex.io/pool --no-headers 2>/dev/null | awk '$NF==""||NF<6{c++} END{print c+0}')
+    chk "nodes labelled caimex.io/pool" "$((NODES-un)) / $NODES" "$([ "${un:-0}" -eq 0 ] && echo ok || echo bad)"
+
+    # pullPolicy: Never is correct on one node and fatal on many -- a pod on a
+    # node that never imported the image does not even attempt a pull.
+    pp=$(kubectl -n jupyterhub get deploy hub -o jsonpath='{.spec.template.spec.containers[0].imagePullPolicy}' 2>/dev/null)
+    chk "hub imagePullPolicy" "${pp:-?}" "$([ "$pp" != "Never" ] && echo ok || echo bad)"
+
+    # local-path is hostPath underneath: it pins each user to one node and
+    # serves a different empty directory for ~/team on every other node.
+    sc=$(kubectl -n jupyterhub get pvc jupyter-shared-team -o jsonpath='{.spec.storageClassName}' 2>/dev/null)
+    am=$(kubectl -n jupyterhub get pvc jupyter-shared-team -o jsonpath='{.spec.accessModes[0]}' 2>/dev/null)
+    chk "shared storage is RWX" "${sc:-none} ${am:-}" "$([ "$am" = "ReadWriteMany" ] && echo ok || echo bad)"
+fi
 
 for d in hub proxy cloudflared; do
     s=$(kubectl -n jupyterhub get deploy "$d" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
@@ -49,8 +81,12 @@ if mountpoint -q "${USER_STORAGE_MNT:-/var/lib/k3s-user-storage}" 2>/dev/null; t
     chk "quota reconcile timer" "$t" "$([ "$t" = active ] && echo ok || echo bad)"
     d=$(df --output=pcent "${USER_STORAGE_MNT:-/var/lib/k3s-user-storage}" 2>/dev/null | tail -1 | tr -dc '0-9')
     chk "user storage used" "${d:-?}%" "$([ "${d:-0}" -lt 85 ] && echo ok || echo bad)"
-else
+elif [ "${NODES:-1}" -le 1 ]; then
     chk "user storage quota-enforced" "NOT mounted - quotas unenforced" bad
+else
+    # scripts/07 is per-node and is superseded on a cluster: quotas come from
+    # the RWX backend's own limits and the PVC size, not a local XFS image.
+    printf '  %-42s %s\n' "user storage quota" "delegated to RWX backend"
 fi
 
 r=$(df --output=pcent / | tail -1 | tr -dc '0-9')

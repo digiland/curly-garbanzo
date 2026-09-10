@@ -44,7 +44,9 @@ RUN mkdir -p /opt/caimex/cache /tmp/warm \
 # loads broken -- and because it *replaces* the core filebrowser and
 # cell-executor extensions, installing it disables them and leaves users with a
 # JupyterLab that has no file browser at all.
-# boto3 is here so the object-storage examples work with no user setup.
+# boto3 is here so the object-storage examples work with no user setup, and
+# kubernetes so ~/examples/distributed-training.ipynb can submit a PyTorchJob
+# without the user pip-installing anything first. Both are inert if unused.
 # Versions are pinned: an unpinned lab extension is free to pull a build
 # incompatible with the base image's JupyterLab on any future rebuild.
 # ---------------------------------------------------------------------------
@@ -54,6 +56,7 @@ RUN pip install --no-cache-dir \
       jupyterlab-git==0.51.0 \
       nbgitpuller==1.2.1 \
       boto3==1.40.29 \
+      kubernetes==31.0.0 \
  && jupyter lab build --minimize=False 2>/dev/null || true
 
 # Show memory as a fraction of the pod's cgroup limit rather than the host's

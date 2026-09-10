@@ -1,0 +1,81 @@
+# Multi-node distributed training. A JupyterHub notebook is ONE pod: there is no
+# rank-0 election, no headless service for workers to find each other, and no
+# gang scheduling, so `torchrun --nnodes=8` inside a notebook has nothing to talk
+# to. The Training Operator creates the pods and sets MASTER_ADDR / MASTER_PORT /
+# RANK / WORLD_SIZE itself.
+#
+# The notebook is the launchpad, not the compute. Users develop on a 1-GPU
+# profile and submit this; the job outlives the notebook and the idle culler
+# never touches it.
+#
+#   kubectl apply -f pytorchjob-example.yaml
+#   kubectl get pytorchjob -w
+#   kubectl logs -f my-training-run-master-0
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: my-training-run
+  namespace: jupyterhub
+  labels:
+    # Routes the job through Kueue: it is admitted only when ALL pods can be
+    # placed at once. Without gang scheduling, two users each asking for 64 GPUs
+    # on a 100-GPU cluster take 50 each and both wait forever for pods that will
+    # never come -- the cluster deadlocks with every GPU busy and no progress.
+    kueue.x-k8s.io/queue-name: user-queue
+spec:
+  runPolicy:
+    cleanPodPolicy: None            # keep pods after exit so logs survive
+    ttlSecondsAfterFinished: 86400
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template: &worker
+        spec:
+          runtimeClassName: nvidia
+          nodeSelector:
+            caimex.io/pool: gpu     # whole GPUs; MIG slices have no NVLink P2P
+          containers:
+            - name: pytorch
+              image: REGISTRY_PLACEHOLDER/pytorch-caimex:cuda12
+              imagePullPolicy: IfNotPresent
+              command:
+                - torchrun
+                - --nnodes=4
+                - --nproc_per_node=8
+                - /home/jovyan/team/train.py
+              env:
+                # Sensible NCCL defaults for Ethernet. On InfiniBand/RoCE remove
+                # IB_DISABLE and set NCCL_IB_HCA to your adapters instead --
+                # this single choice usually decides whether 32 GPUs give you
+                # 30x or 10x.
+                - {name: NCCL_IB_DISABLE,      value: "1"}
+                - {name: NCCL_SOCKET_IFNAME,   value: "eth0"}
+                - {name: NCCL_DEBUG,           value: "WARN"}
+                - {name: TORCH_DISTRIBUTED_DEBUG, value: "OFF"}
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  cpu: "32"
+                  memory: 192Gi
+                requests:
+                  nvidia.com/gpu: 8
+                  cpu: "16"
+                  memory: 128Gi
+              volumeMounts:
+                # Code and checkpoints on shared storage: every rank writes here,
+                # and the notebook that launched the job reads the results back.
+                - {name: team,  mountPath: /home/jovyan/team}
+                - {name: data,  mountPath: /home/jovyan/shared, readOnly: true}
+                - {name: dshm,  mountPath: /dev/shm}
+          volumes:
+            - name: team
+              persistentVolumeClaim: {claimName: jupyter-shared-team}
+            - name: data
+              persistentVolumeClaim: {claimName: jupyter-shared-datasets}
+            - name: dshm
+              emptyDir: {medium: Memory, sizeLimit: 16Gi}
+    Worker:
+      replicas: 3                   # + Master = --nnodes=4
+      restartPolicy: OnFailure
+      template: *worker

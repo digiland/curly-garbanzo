@@ -1,0 +1,159 @@
+# Multi-node overlay. Apply AFTER the base file, never instead of it:
+#
+#   helm upgrade -i jupyterhub jupyterhub/jupyterhub -n jupyterhub \
+#     -f charts/jupyterhub-values.yaml \
+#     -f charts/jupyterhub-values-cluster.yaml
+#
+# The base file assumes one box: images live in that node's containerd, the
+# shared folders are hostPaths on its disk, and homes come from k3s local-path.
+# All three are silently wrong across nodes -- see docs/CLUSTER.md. This file
+# corrects them. Helm merges maps key-by-key and REPLACES lists wholesale, which
+# is why profileList is restated in full here and why `null` is used to delete a
+# key the base file set.
+#
+# Two placeholders must be substituted before this is usable:
+#   REGISTRY_PLACEHOLDER  e.g. ghcr.io/digiland   (scripts/04-images.sh REGISTRY=)
+#   RWX_CLASS_PLACEHOLDER e.g. nfs-client, longhorn  (must support ReadWriteMany)
+
+hub:
+  image:
+    name: REGISTRY_PLACEHOLDER/k8s-hub-native
+    tag: "4.4.2"
+    # Not `Never`: the hub can land on any node, and a node that has never run
+    # `ctr images import` has nothing to fall back on. This is the single most
+    # common multi-node failure -- the pod does not even attempt a pull.
+    pullPolicy: IfNotPresent
+  # The hub's SQLite database lives on a PVC. On local-path that PVC is a
+  # hostPath, so the hub is pinned to one node and cannot reschedule if the node
+  # is drained. Postgres removes the pin entirely; until then, keep the hub on
+  # RWX so a reschedule at least finds its database.
+  db:
+    pvc:
+      storageClassName: RWX_CLASS_PLACEHOLDER
+    # For >50 users, move off SQLite altogether:
+    # type: postgres
+    # url: postgresql+psycopg2://jupyterhub@postgres:5432/jupyterhub
+
+singleuser:
+  image:
+    name: REGISTRY_PLACEHOLDER/pytorch-caimex
+    tag: cuda12
+    pullPolicy: IfNotPresent
+  # The base file pins every pod to the nvidia RuntimeClass, which a CPU-only
+  # node without nvidia-container-toolkit cannot satisfy -- the CPU profile
+  # would fail to start there. `null` deletes the key; each GPU profile below
+  # re-adds it for itself.
+  extraPodConfig:
+    runtimeClassName: null
+  # KubeSpawner mounts a ServiceAccount token only when a service account is
+  # named -- without this the in-cluster API call in
+  # ~/examples/distributed-training.ipynb fails before it can even 403, because
+  # there is no token to authenticate with. Rights come from
+  # k8s/training/user-rbac.yaml and stop at submitting and watching jobs.
+  serviceAccountName: default
+  storage:
+    type: dynamic
+    capacity: 20Gi
+    dynamic:
+      # local-path binds a PVC to whichever node the first spawn landed on and
+      # pins the user there permanently: if that node's GPUs are full they
+      # cannot spawn at all while the rest of the cluster idles.
+      storageClass: RWX_CLASS_PLACEHOLDER
+    extraVolumes:
+      # hostPath gives every node its own empty copy of these directories, so
+      # two users on different nodes see different ~/team and neither is told.
+      # One RWX claim, mounted by every server on every node. See
+      # k8s/cluster/shared-pvcs.yaml.
+      - name: shared-datasets
+        persistentVolumeClaim: {claimName: jupyter-shared-datasets}
+      - name: shared-team
+        persistentVolumeClaim: {claimName: jupyter-shared-team}
+      - name: dshm
+        emptyDir: {medium: Memory, sizeLimit: 8Gi}
+    extraVolumeMounts:
+      - name: shared-datasets
+        mountPath: /home/jovyan/shared
+        readOnly: true
+      - name: shared-team
+        mountPath: /home/jovyan/team
+      - name: dshm
+        mountPath: /dev/shm
+  startTimeout: 900                 # first pull of a CUDA image over the network
+
+  # Node pools, set by scripts/10-cluster-prereqs.sh:
+  #   caimex.io/pool=cpu    no GPU
+  #   caimex.io/pool=mig    MIG-partitioned, for interactive/dev work
+  #   caimex.io/pool=gpu    whole GPUs, for training
+  #
+  # MIG slices are deliberately NOT offered for multi-GPU work: MIG instances
+  # have no NVLink peer-to-peer path between them, so NCCL falls back through
+  # host memory and DDP across slices is slower than a single whole GPU.
+  profileList:
+    - display_name: "CPU only — no GPU"
+      description: "8 GB RAM, 2 CPU. Data prep, analysis, writing code before you queue a job."
+      default: true
+      kubespawner_override:
+        cpu_limit: 2
+        cpu_guarantee: 0.5
+        mem_limit: "8G"
+        mem_guarantee: "1G"
+        node_selector: {caimex.io/pool: cpu}
+        extra_resource_limits: {}
+
+    - display_name: "GPU — Shared slice (MIG)"
+      description: "1 MIG slice (18 GB VRAM), 12 GB RAM, 2 CPU. Interactive work and single-GPU fine-tunes."
+      kubespawner_override:
+        cpu_limit: 2
+        cpu_guarantee: 0.5
+        mem_limit: "12G"
+        mem_guarantee: "1G"
+        node_selector: {caimex.io/pool: mig}
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/gpu: "1"}
+
+    - display_name: "GPU — Whole GPU"
+      description: "1 full GPU, 48 GB RAM, 8 CPU. Model too large for an 18 GB slice."
+      kubespawner_override:
+        cpu_limit: 8
+        cpu_guarantee: 2
+        mem_limit: "48G"
+        mem_guarantee: "4G"
+        node_selector: {caimex.io/pool: gpu}
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/gpu: "1"}
+
+    - display_name: "GPU — 8 x GPU (single node)"
+      description: "All 8 GPUs on one node, 192 GB RAM. DDP/FSDP within one host. For more than one node, submit a PyTorchJob — see ~/examples/distributed-training.ipynb."
+      kubespawner_override:
+        cpu_limit: 32
+        cpu_guarantee: 8
+        mem_limit: "192G"
+        mem_guarantee: "16G"
+        node_selector: {caimex.io/pool: gpu}
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/gpu: "8"}
+
+# Idle culling stays on, and matters more here: an 8-GPU notebook left open
+# overnight is eight idle GPUs. It is safe precisely because training runs as a
+# PyTorchJob, not inside the notebook -- the culler never sees those pods.
+# If you ever let users train in-notebook, raise this or they lose work.
+cull:
+  enabled: true
+  users: true
+  timeout: 3600
+  every: 300
+  maxAge: 0
+
+scheduling:
+  userScheduler:
+    # Packs users onto the fewest nodes, so whole nodes stay free for multi-GPU
+    # jobs and can be drained for maintenance. Pointless on one node, essential
+    # on a cluster.
+    enabled: true
+  podPriority:
+    enabled: true
+  userPlaceholder:
+    enabled: false                  # set a count to pre-warm spawn capacity
+  corePods:
+    nodeAffinity:
+      matchNodePurpose: prefer      # keep hub/proxy off GPU nodes where possible

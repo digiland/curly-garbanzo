@@ -19,6 +19,8 @@ Live reference deployment: `https://notebooks.futurezim.com`
   consuming one of the seven slices
 - **Enforced per-user disk quotas** — XFS project quotas, because local-path
   enforces nothing on its own
+- **Multi-node ready** — an opt-in overlay for clusters, plus PyTorchJob/Kueue for
+  distributed training that a single notebook pod cannot do ([docs/CLUSTER.md](docs/CLUSTER.md))
 - **Colab-style notebook UX** — RAM/CPU meter, live GPU dashboard, Git integration,
   nbgitpuller links, a seeded welcome notebook, and optional object storage
 
@@ -29,11 +31,12 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `scripts/` | Numbered, run-in-order deploy scripts — start here |
 | `host/` | Host-level units: MIG layout service, cloudflared QUIC tuning |
 | `images/` | Dockerfiles for the hub and singleuser images |
-| `charts/` | JupyterHub Helm values |
-| `k8s/` | cloudflared manifest |
+| `charts/` | JupyterHub Helm values — base (single node) plus the multi-node overlay |
+| `k8s/` | cloudflared manifest; shared RWX claims and the training-job layer |
 | `templates/` | Branding for the hub's login/signup pages (a ConfigMap, not an image rebuild) |
 | `docs/BUILD-NOTES.md` | Full build log: what was on the box, what broke, how it was fixed |
 | `docs/OPERATIONS.md` | Day-two: onboarding, sizing, quotas, and the two things that take this down |
+| `docs/CLUSTER.md` | Running this on more than one node: what breaks, distributed training, notes on serving inference |
 
 ## Deploy
 

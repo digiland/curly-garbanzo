@@ -1,0 +1,49 @@
+# Gang scheduling and fair share. Kueue admits a job only when every one of its
+# pods can be placed simultaneously, and holds it in a queue otherwise.
+#
+# Without this, the failure at scale is not a crash -- it is a deadlock. Two
+# users each request 64 GPUs on a 100-GPU cluster, Kubernetes places 50 pods for
+# each, and both jobs wait on the other's GPUs indefinitely. Every GPU is busy
+# and nothing trains.
+#
+#   kubectl apply -f k8s/training/kueue-quotas.yaml
+#   kubectl get workloads -n jupyterhub        # what is queued and why
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: whole-gpu
+spec:
+  nodeLabels:
+    caimex.io/pool: gpu
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: gpu-cluster-queue
+spec:
+  namespaceSelector: {}
+  # BestEffortFIFO, not StrictFIFO: a 64-GPU job at the head of the queue would
+  # otherwise block every 8-GPU job behind it while it waits for room.
+  queueingStrategy: BestEffortFIFO
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+  resourceGroups:
+    - coveredResources: ["nvidia.com/gpu", "cpu", "memory"]
+      flavors:
+        - name: whole-gpu
+          resources:
+            # Sized for the cluster, deliberately below the physical total so
+            # interactive notebooks are never starved by batch jobs.
+            - {name: "nvidia.com/gpu", nominalQuota: 80}
+            - {name: "cpu",            nominalQuota: 320}
+            - {name: "memory",         nominalQuota: 2000Gi}
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: user-queue
+  namespace: jupyterhub
+spec:
+  clusterQueue: gpu-cluster-queue

@@ -1,0 +1,35 @@
+# The shared spaces, as ReadWriteMany claims instead of per-node hostPaths.
+# Apply before the cluster overlay:  kubectl apply -f k8s/cluster/shared-pvcs.yaml
+#
+# storageClassName must be a class that genuinely supports ReadWriteMany. k3s's
+# local-path does NOT: it will bind, mount on one node, and quietly serve a
+# different empty directory to every other node.
+#   NFS      nfs-subdir-external-provisioner  -> nfs-client
+#   Longhorn built-in RWX                     -> longhorn
+#   Rook     CephFS                           -> rook-cephfs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jupyter-shared-datasets
+  namespace: jupyterhub
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: RWX_CLASS_PLACEHOLDER
+  resources:
+    requests:
+      storage: 500Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jupyter-shared-team
+  namespace: jupyterhub
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: RWX_CLASS_PLACEHOLDER
+  resources:
+    # Unlike the hostPath it replaces, this one has a ceiling. ~/team filling up
+    # now stops at the claim size instead of taking the node's root disk with it.
+    requests:
+      storage: 1Ti
