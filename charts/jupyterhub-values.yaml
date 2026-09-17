@@ -118,7 +118,7 @@ hub:
           "/etc/jupyterhub/custom-templates",
           f"{os.path.dirname(nativeauthenticator.__file__)}/templates/",
       ]
-      c.JupyterHub.logo_file = "/etc/jupyterhub/custom-templates/logo.svg"
+      c.JupyterHub.logo_file = "/etc/jupyterhub/custom-templates/logo.png"
       # Rendered into the announcement block on the login page only.
       # NativeAuthenticator's native-login.html honours announcement_login; its
       # signup.html has no announcement hook, so signup guidance lives in the
@@ -281,7 +281,7 @@ singleuser:
 # Idle culling is mandatory: 7 slices total, an idle notebook holds one forever.
 cull:
   enabled: true
-  users: true
+  users: false                    # stop idle servers only; never delete accounts or home dirs
   timeout: 3600                     # 1h idle -> shut down, releasing the GPU
   every: 300
   maxAge: 0

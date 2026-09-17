@@ -139,7 +139,7 @@ singleuser:
 # If you ever let users train in-notebook, raise this or they lose work.
 cull:
   enabled: true
-  users: true
+  users: false                    # stop idle servers only; never delete accounts or home dirs
   timeout: 3600
   every: 300
   maxAge: 0

@@ -16,8 +16,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --fz-brand:      #0f766e;
-    --fz-brand-dark: #115e59;
+    /* Gold from the ZAI wordmark (templates/logo.png). */
+    --fz-brand:      #b8860b;
+    --fz-brand-dark: #8f6708;
     --fz-ink:        #0f172a;
     --fz-muted:      #64748b;
     --fz-line:       #e2e8f0;
@@ -27,7 +28,7 @@
   /* JupyterHub 5 ships a Bootstrap 5 theme toggle; honour it rather than
      forcing a light page onto someone who chose dark. */
   [data-bs-theme="dark"] {
-    --fz-brand:   #2dd4bf;
+    --fz-brand:   #e2b53a;
     --fz-ink:     #e2e8f0;
     --fz-muted:   #94a3b8;
     --fz-line:    #334155;
@@ -44,6 +45,8 @@
   .navbar { border-bottom: 1px solid var(--fz-line); background: var(--fz-surface) !important; }
   .navbar a { color: var(--fz-ink) !important; }
   .navbar a:hover { color: var(--fz-brand) !important; }
+  /* logo.png is exported at 2x (160px tall) so it stays crisp on retina. */
+  .navbar .jpy-logo, .navbar-brand img { height: 40px; width: auto; }
 
   /* Auth cards: login, signup, change-password */
   #login-main, #signup-main {
@@ -67,7 +70,7 @@
   }
   .auth-form-body .form-control:focus {
     border-color: var(--fz-brand); background: var(--fz-surface);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.15); outline: 0;
+    box-shadow: 0 0 0 3px rgba(184,134,11,.2); outline: 0;
   }
   .auth-form-body .btn-jupyter,
   .auth-form-body input[type="submit"],
