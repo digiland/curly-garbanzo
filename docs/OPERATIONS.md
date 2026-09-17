@@ -23,7 +23,7 @@ than the signup that caused it.
 
 | URL | Use |
 |---|---|
-| `/hub/authorize` | Approve pending signups |
+| `/hub/authorize` | Approve pending signups (nav: **Approve users**) |
 | `/hub/admin` | List users, stop servers (frees a MIG slice), delete users |
 | `/hub/change-password` | Anyone changing their own password |
 
@@ -114,6 +114,13 @@ to fill the disk. `08` alarms at 85% of the user-storage image, but that alarm
 does not cover `~/team`.
 
 ## The two things that take this down
+
+**Users vanishing.** If accounts disappear and have to be recreated, check
+`cull.users` in `charts/jupyterhub-values.yaml`. It must be `false`. With `true`
+the idle culler deletes the *user record* after the idle timeout — and KubeSpawner
+then deletes their `claim-<user>` home PVC — instead of just stopping the server.
+This bit the deployment on 2026-09-11/14 (`Culling user shelton` … `Deleting pvc
+claim-shelton` in the hub log).
 
 **A held MIG slice.** Idle culling (1 h) is what returns slices to the pool. It
 authenticates as a service, using a role the chart appends to

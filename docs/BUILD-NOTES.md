@@ -165,6 +165,8 @@ JupyterHub **NativeAuthenticator** — self-service signup, admin approval.
 - **Idle culling after 1 hour** releases the slice. This will kill long unattended
   training runs — raise `cull.timeout` if that becomes a problem.
 - Home directories persist across restarts and culling; only in-memory state is lost.
+  (`cull.users` must stay `false`: on 2026-09-17 it was found set to `true`, which made the
+  culler delete every idle user's *account and home PVC* after an hour — see OPERATIONS.md.)
 - **No tensor-parallel / NVLink / P2P across slices.** Nobody can exceed 16 GiB.
   Using the whole card again means turning MIG off.
 
@@ -495,7 +497,7 @@ singleuser:
 # Idle culling is mandatory: 7 slices total, an idle notebook holds one forever.
 cull:
   enabled: true
-  users: true
+  users: false   # stop idle servers only; `true` deletes the ACCOUNT and its home PVC
   timeout: 3600                     # 1h idle -> shut down, releasing the GPU
   every: 300
   maxAge: 0

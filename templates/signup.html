@@ -1,0 +1,113 @@
+{% extends "page.html" %}
+{# Overrides nativeauthenticator/templates/signup.html. Field names are the
+   handler's: username, email, signup_password, signup_password_confirmation.
+   NativeAuthenticator re-renders this same template after the POST with
+   `alert` + `result_message`; an alert-info/alert-success result means the
+   account exists, so the form is replaced by a what-happens-next state. #}
+
+{% block title %}Request access · ZAI Notebooks{% endblock %}
+
+{% block announcement %}{% endblock %}
+
+{% block script %}
+{{ super() }}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var eye = document.getElementById('eye');
+    if (!eye) return;
+    var a = document.getElementById('password_input'), b = document.getElementById('password_confirmation_input');
+    eye.addEventListener('click', function () {
+      var show = a.getAttribute('type') === 'password';
+      a.setAttribute('type', show ? 'text' : 'password');
+      b.setAttribute('type', show ? 'text' : 'password');
+      eye.textContent = show ? 'HIDE' : 'SHOW';
+      eye.setAttribute('aria-pressed', show);
+    });
+    {% if tos %}
+    var tos = document.getElementById('tos_check'), submit = document.getElementById('signup_submit');
+    tos.addEventListener('click', function () { submit.disabled = !tos.checked; });
+    {% endif %}
+  });
+</script>
+{% if recaptcha_key %}<script src="https://www.google.com/recaptcha/api.js" async defer></script>{% endif %}
+{% endblock script %}
+
+{% block main %}
+<div class="z-auth-outer">
+<main class="z-auth">
+  {% include "zai-panel.html" %}
+  <section class="z-auth-card" id="signup-main">
+
+    {% if alert in ('alert-info', 'alert-success') %}
+      <div class="z-eyebrow">Request received</div>
+      <h2>{% if alert == 'alert-success' %}Your account is ready.{% else %}You're in the queue.{% endif %}</h2>
+      <ol class="z-steps">
+        {% if alert == 'alert-success' %}
+        <li><div><strong>Sign in</strong><span>Your account was approved automatically.</span></div></li>
+        <li><div><strong>Pick a server size</strong><span>GPU for anything that touches CUDA; CPU-only otherwise.</span></div></li>
+        <li><div><strong>Open Welcome.ipynb</strong><span>It's in your home directory and checks your GPU live.</span></div></li>
+        {% else %}
+        <li><div><strong>An administrator approves your account</strong><span>Approval is manual, so this usually takes a little while. Nothing to do until then.</span></div></li>
+        <li><div><strong>Sign in with the details you just chose</strong><span>Until you're approved, signing in says the account is waiting.</span></div></li>
+        <li><div><strong>Pick a server size and start</strong><span>Your JupyterLab is ready in about fifteen seconds.</span></div></li>
+        {% endif %}
+      </ol>
+      {% if two_factor_auth_user %}
+      <p class="z-alert is-warn">Your two-factor code is <strong>{{ two_factor_auth_value }}</strong>. Keep it somewhere safe; it isn't shown again.</p>
+      {% endif %}
+      <a class="z-btn" href="{{ base_url }}login">Go to sign in</a>
+
+    {% else %}
+      <h2>Request access</h2>
+      {% if alert %}
+        <p class="z-alert is-bad" role="alert">{{ result_message | replace("Something went wrong!\n", "") }}</p>
+      {% endif %}
+      <form action="{{ post_url }}" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <div class="z-field">
+          <label for="username_input">Username</label>
+          <input id="username_input" class="z-input" type="text" name="username" value="{{ username }}"
+                 autocapitalize="off" autocorrect="off" autocomplete="username" autofocus required
+                 pattern="[a-z][a-z0-9-]{2,30}" title="Lowercase letters, digits or hyphens; 3–31 characters; starts with a letter">
+          <span class="hint">Lowercase letters, digits or hyphens, 3–31 characters. It becomes your server's name.</span>
+        </div>
+        {% if ask_email %}
+        <div class="z-field">
+          <label for="email_input">Email</label>
+          <input id="email_input" class="z-input" type="email" name="email" value="{{ email }}" autocomplete="email" required>
+          <span class="hint">Only used to tell you when your account is approved.</span>
+        </div>
+        {% endif %}
+        <div class="z-field">
+          <label for="password_input">Password</label>
+          <div class="z-input-wrap">
+            <input id="password_input" class="z-input" type="password" name="signup_password"
+                   autocapitalize="off" autocorrect="off" autocomplete="new-password" minlength="12" required>
+            <button id="eye" class="z-eye" type="button" aria-label="Show password" aria-pressed="false">SHOW</button>
+          </div>
+          <span class="hint">At least 12 characters and not a common password.</span>
+        </div>
+        <div class="z-field">
+          <label for="password_confirmation_input">Confirm password</label>
+          <input id="password_confirmation_input" class="z-input" type="password" name="signup_password_confirmation"
+                 autocapitalize="off" autocorrect="off" autocomplete="new-password" minlength="12" required>
+        </div>
+        {% if two_factor_auth %}
+        <label class="z-field" style="flex-direction:row;gap:.6rem;align-items:center">
+          <input type="checkbox" id="2fa" name="2fa" value="2fa"> Set up two-factor authentication
+        </label>
+        {% endif %}
+        {% if tos %}
+        <label class="z-field" style="flex-direction:row;gap:.6rem;align-items:center">
+          <input type="checkbox" id="tos_check"> <span>{{ tos | safe }}</span>
+        </label>
+        {% endif %}
+        {% if recaptcha_key %}<div class="g-recaptcha" data-sitekey="{{ recaptcha_key }}"></div>{% endif %}
+        <input type="submit" id="signup_submit" class="z-btn is-block" value="Request access" {% if tos %}disabled{% endif %}>
+      </form>
+      <p class="aside">Accounts are approved by an administrator before first sign-in. Already have one? <a href="{{ base_url }}login">Sign in</a>.</p>
+    {% endif %}
+  </section>
+</main>
+</div>
+{% endblock main %}

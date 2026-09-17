@@ -1,132 +1,268 @@
 {% extends "templates/page.html" %}
 {#
-  Shadows nativeauthenticator/templates/page.html, which is itself only a two-line
-  override adding the Change Password / Authorize Users nav links. Because our
-  template_paths entry comes first, every page that does `{% extends "page.html" %}`
-  -- native-login, signup, authorization-area, change-password -- inherits this
-  instead, so the whole surface is themed from one file. The nav links are
-  reproduced below; dropping them would silently remove admins' route to
-  /hub/authorize.
+  Base for every hub page. Shadows nativeauthenticator/templates/page.html
+  (itself a two-line override adding the Change Password / Authorize Users nav
+  links); because our template_paths entry comes first, every page that does
+  `{% extends "page.html" %}` -- login, signup, authorize, change-password,
+  spawn, spawn_pending, home -- inherits this, so the whole surface is themed
+  from one file. The nav links are reproduced below; dropping them would
+  silently remove admins' route to /hub/authorize.
+
+  Palette is taken from the ZAI logo (templates/logo.png): gold accent, silver
+  neutrals, graphite ink. The navbar stays graphite in both themes because the
+  metallic logo is drawn for a dark ground.
 #}
+
+{% block title %}ZAI Notebooks{% endblock %}
+
+{% block favicon %}
+<link rel="icon" type="image/png" href="data:image/png;base64,{% include 'favicon.b64' %}">
+{% endblock favicon %}
 
 {% block stylesheet %}
 {{ super() }}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    /* Gold from the ZAI wordmark (templates/logo.png). */
-    --fz-brand:      #b8860b;
-    --fz-brand-dark: #8f6708;
-    --fz-ink:        #0f172a;
-    --fz-muted:      #64748b;
-    --fz-line:       #e2e8f0;
-    --fz-surface:    #ffffff;
-    --fz-canvas:     #f1f5f9;
+    --z-gold:        #c9a227;
+    --z-gold-deep:   #9a7616;
+    --z-gold-soft:   rgba(201,162,39,.14);
+    --z-silver:      #c7cbd1;
+    --z-graphite:    #15171b;
+    --z-ink:         #15171b;
+    --z-ink-2:       #3d424a;
+    --z-muted:       #6b7078;
+    --z-line:        #dde0e5;
+    --z-line-strong: #c4c8cf;
+    --z-surface:     #ffffff;
+    --z-canvas:      #f3f4f6;
+    --z-inset:       #eceef1;
+    --z-ok:          #2e7d4f;
+    --z-ok-soft:     rgba(46,125,79,.12);
+    --z-warn:        #b45309;
+    --z-warn-soft:   rgba(180,83,9,.12);
+    --z-bad:         #b3261e;
+    --z-bad-soft:    rgba(179,38,30,.10);
+    --z-display:     'Outfit', 'Segoe UI', system-ui, sans-serif;
+    --z-body:        'Manrope', 'Segoe UI', system-ui, sans-serif;
+    --z-mono:        'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --z-radius:      10px;
+    --z-shadow:      0 1px 2px rgba(21,23,27,.06), 0 12px 32px -12px rgba(21,23,27,.18);
   }
-  /* JupyterHub 5 ships a Bootstrap 5 theme toggle; honour it rather than
-     forcing a light page onto someone who chose dark. */
+  /* JupyterHub's darkmode.js always stamps data-bs-theme (stored choice, else
+     the OS setting), so the tokens only need the two states. */
   [data-bs-theme="dark"] {
-    --fz-brand:   #e2b53a;
-    --fz-ink:     #e2e8f0;
-    --fz-muted:   #94a3b8;
-    --fz-line:    #334155;
-    --fz-surface: #1e293b;
-    --fz-canvas:  #0f172a;
+    --z-gold:        #e0b942;
+    --z-gold-deep:   #c9a227;
+    --z-gold-soft:   rgba(224,185,66,.14);
+    --z-ink:         #e6e8eb;
+    --z-ink-2:       #b6bbc3;
+    --z-muted:       #8b9199;
+    --z-line:        #2a2f37;
+    --z-line-strong: #3a4049;
+    --z-surface:     #171a1f;
+    --z-canvas:      #0e1013;
+    --z-inset:       #1f2228;
+    --z-ok:          #5fc48a;
+    --z-ok-soft:     rgba(95,196,138,.14);
+    --z-warn:        #e8a24a;
+    --z-warn-soft:   rgba(232,162,74,.14);
+    --z-bad:         #f0776f;
+    --z-bad-soft:    rgba(240,119,111,.14);
+    --z-shadow:      0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
   }
 
+  html { background: var(--z-canvas); }
   body {
-    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    background: var(--fz-canvas);
-    color: var(--fz-ink);
+    font-family: var(--z-body); font-size: 15px; line-height: 1.55;
+    background: var(--z-canvas); color: var(--z-ink);
+    -webkit-font-smoothing: antialiased;
   }
+  h1, h2, h3, .z-display { font-family: var(--z-display); letter-spacing: -.01em; text-wrap: balance; }
+  a { color: var(--z-gold-deep); }
+  [data-bs-theme="dark"] a { color: var(--z-gold); }
+  code, .z-mono { font-family: var(--z-mono); font-size: .875em; }
+  :focus-visible { outline: 2px solid var(--z-gold); outline-offset: 2px; }
 
-  .navbar { border-bottom: 1px solid var(--fz-line); background: var(--fz-surface) !important; }
-  .navbar a { color: var(--fz-ink) !important; }
-  .navbar a:hover { color: var(--fz-brand) !important; }
+  /* ---- navbar: graphite in both themes ---- */
+  .navbar.bg-body-tertiary {
+    background: var(--z-graphite) !important; border-bottom: 1px solid #2a2f37;
+    margin-bottom: 0 !important; padding: .35rem 0;
+  }
+  .navbar .container-fluid { padding-inline: clamp(16px, 3vw, 32px); }
   /* logo.png is exported at 2x (160px tall) so it stays crisp on retina. */
-  .navbar .jpy-logo, .navbar-brand img { height: 40px; width: auto; }
+  .navbar .jpy-logo { height: 38px; width: auto; display: block; }
+  .navbar .nav-link, .navbar #login_widget, .navbar #login_widget span { color: #c7cbd1 !important; font-weight: 500; font-size: .9rem; }
+  .navbar .nav-link:hover { color: #e0b942 !important; }
+  .navbar .btn-outline-contrast { color: #e6e8eb; border-color: #3a4049; border-radius: 8px; font-weight: 600; }
+  .navbar .btn-outline-contrast:hover { background: #e0b942; border-color: #e0b942; color: #15171b; }
+  .navbar #dark-theme-toggle { color: #c7cbd1; }
+  .navbar .navbar-toggler { border-color: #3a4049; }
+  .navbar .navbar-toggler-icon { filter: invert(1) grayscale(1); }
 
-  /* Auth cards: login, signup, change-password */
-  #login-main, #signup-main {
-    max-width: 26rem; margin: 3.5rem auto; padding: 0;
-  }
-  .auth-form-header {
-    background: linear-gradient(135deg, var(--fz-brand), var(--fz-brand-dark));
-    color: #fff; font-size: 1.15rem; font-weight: 600;
-    padding: 1.1rem 1.5rem; border-radius: 12px 12px 0 0;
-    text-align: left; border: 0;
-  }
-  .auth-form-body {
-    background: var(--fz-surface); border: 1px solid var(--fz-line); border-top: 0;
-    border-radius: 0 0 12px 12px; padding: 1.5rem;
-    box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 8px 24px rgba(15,23,42,.05);
-  }
-  .auth-form-body label { font-weight: 500; font-size: .875rem; margin-bottom: .25rem; }
-  .auth-form-body .form-control {
-    border-radius: 8px; border: 1px solid var(--fz-line);
-    padding: .55rem .75rem; background: var(--fz-canvas); color: var(--fz-ink);
-  }
-  .auth-form-body .form-control:focus {
-    border-color: var(--fz-brand); background: var(--fz-surface);
-    box-shadow: 0 0 0 3px rgba(184,134,11,.2); outline: 0;
-  }
-  .auth-form-body .btn-jupyter,
-  .auth-form-body input[type="submit"],
-  .auth-form-body button[type="submit"] {
-    background: var(--fz-brand); border: 0; color: #fff; font-weight: 600;
-    border-radius: 8px; padding: .6rem 1rem; width: 100%; margin-top: .5rem;
-  }
-  .auth-form-body .btn-jupyter:hover,
-  .auth-form-body input[type="submit"]:hover,
-  .auth-form-body button[type="submit"]:hover { background: var(--fz-brand-dark); }
+  .announcement { border-radius: var(--z-radius); max-width: 46rem; margin: 1.25rem auto 0; }
 
-  .login_error, .error { color: #b91c1c; font-size: .875rem; font-weight: 500; }
-  [data-bs-theme="dark"] .login_error { color: #fca5a5; }
-
-  /* Guidance text injected by fz-help blocks below the forms. */
-  .fz-help {
-    max-width: 26rem; margin: 1rem auto 0; font-size: .8125rem;
-    color: var(--fz-muted); line-height: 1.5; text-align: center;
+  /* ---- shared primitives ---- */
+  .z-eyebrow {
+    font-family: var(--z-body); font-size: .72rem; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--z-gold-deep);
   }
-  .fz-help a { color: var(--fz-brand); text-decoration: none; font-weight: 500; }
-  .fz-help a:hover { text-decoration: underline; }
+  [data-bs-theme="dark"] .z-eyebrow { color: var(--z-gold); }
+  .z-btn, .btn-jupyter {
+    display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+    font-family: var(--z-body); font-weight: 700; font-size: .95rem; line-height: 1;
+    padding: .8rem 1.25rem; border-radius: 8px; border: 1px solid transparent;
+    background: var(--z-gold); color: #15171b !important; text-decoration: none; cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  .z-btn:hover, .btn-jupyter:hover { background: var(--z-gold-deep); color: #fff !important; }
+  [data-bs-theme="dark"] .z-btn:hover, [data-bs-theme="dark"] .btn-jupyter:hover { color: #15171b !important; }
+  .z-btn:active { transform: translateY(1px); }
+  .z-btn.is-block { width: 100%; }
+  .z-btn.is-quiet { background: transparent; border-color: var(--z-line-strong); color: var(--z-ink) !important; }
+  .z-btn.is-quiet:hover { background: var(--z-inset); border-color: var(--z-line-strong); }
+  .z-btn.is-danger { background: transparent; border-color: var(--z-bad); color: var(--z-bad) !important; }
+  .z-btn.is-danger:hover { background: var(--z-bad); color: #fff !important; }
+  .z-btn.is-sm { padding: .5rem .85rem; font-size: .85rem; }
+  .z-btn[disabled] { opacity: .55; cursor: default; }
 
-  .announcement { border-radius: 10px; max-width: 46rem; margin: 1.5rem auto 0; }
+  .z-field { display: flex; flex-direction: column; gap: .35rem; }
+  .z-field label { font-weight: 600; font-size: .875rem; color: var(--z-ink); margin: 0; }
+  .z-field .hint { font-size: .8rem; color: var(--z-muted); }
+  .z-input, .form-control {
+    font-family: var(--z-body); font-size: .95rem; color: var(--z-ink);
+    background: var(--z-inset); border: 1px solid var(--z-line); border-radius: 8px;
+    padding: .7rem .85rem; width: 100%;
+  }
+  .z-input:focus, .form-control:focus {
+    background: var(--z-surface); border-color: var(--z-gold); color: var(--z-ink);
+    box-shadow: 0 0 0 3px var(--z-gold-soft); outline: 0;
+  }
+  .z-input-wrap { position: relative; }
+  .z-input-wrap .z-input { padding-right: 3.5rem; }
+  .z-eye {
+    position: absolute; right: .35rem; top: 50%; transform: translateY(-50%);
+    background: none; border: 0; color: var(--z-muted); font: inherit; font-size: .75rem; font-weight: 700; letter-spacing: .04em;
+    padding: .4rem .6rem; border-radius: 6px; cursor: pointer;
+  }
+  .z-eye:hover { color: var(--z-ink); background: var(--z-line); }
 
-  /* Spawn-options profile list: make the choice legible instead of bare radios,
-     since picking CPU-only here is what keeps a MIG slice free for someone else. */
-  .profile { border: 1px solid var(--fz-line); border-radius: 10px;
-             padding: .9rem 1.1rem; margin-bottom: .75rem; background: var(--fz-surface); }
-  .profile:hover { border-color: var(--fz-brand); }
-  .profile-item .profile label { font-weight: 600; }
-  .profile .profile-name { font-weight: 600; }
-  .profile .profile-description { color: var(--fz-muted); font-size: .875rem; }
+  .z-alert { border-radius: 8px; padding: .8rem 1rem; font-size: .9rem; border: 1px solid transparent; margin: 0; }
+  .z-alert.is-bad  { background: var(--z-bad-soft);  color: var(--z-bad);  border-color: color-mix(in srgb, var(--z-bad) 30%, transparent); }
+  .z-alert.is-ok   { background: var(--z-ok-soft);   color: var(--z-ok);   border-color: color-mix(in srgb, var(--z-ok) 30%, transparent); }
+  .z-alert.is-warn { background: var(--z-warn-soft); color: var(--z-warn); border-color: color-mix(in srgb, var(--z-warn) 30%, transparent); }
+  .z-alert.is-info { background: var(--z-gold-soft); color: var(--z-ink);  border-color: color-mix(in srgb, var(--z-gold) 40%, transparent); }
+
+  .z-pill {
+    display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem; font-weight: 700;
+    letter-spacing: .06em; text-transform: uppercase; padding: .2rem .55rem; border-radius: 999px;
+    background: var(--z-inset); color: var(--z-ink-2); white-space: nowrap;
+  }
+  .z-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .z-pill.is-ok   { background: var(--z-ok-soft);   color: var(--z-ok); }
+  .z-pill.is-warn { background: var(--z-warn-soft); color: var(--z-warn); }
+  .z-pill.is-gold { background: var(--z-gold-soft); color: var(--z-gold-deep); }
+  [data-bs-theme="dark"] .z-pill.is-gold { color: var(--z-gold); }
+
+  /* ---- auth split layout (login / signup / change-password) ---- */
+  .z-auth-outer { padding-inline: 16px; }
+  .z-auth {
+    display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    max-width: 66rem; margin: clamp(1.5rem, 5vh, 3.5rem) auto;
+    border-radius: 14px; overflow: hidden; box-shadow: var(--z-shadow);
+  }
+  .z-auth-panel {
+    color: #e6e8eb; padding: clamp(1.5rem, 4vw, 2.75rem);
+    display: flex; flex-direction: column; gap: 1.75rem;
+    background-color: #15171b;
+    background-image:
+      radial-gradient(60% 40% at 100% 0%, rgba(224,185,66,.14), transparent 70%),
+      linear-gradient(180deg, #1a1d22, #111316);
+  }
+  .z-auth-panel img { width: min(200px, 60%); height: auto; }
+  .z-auth-panel h1 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 600; margin: .35rem 0 0; color: #fff; line-height: 1.15; }
+  .z-auth-panel .lede { color: #b6bbc3; margin: 0; max-width: 34ch; }
+  .z-facts { list-style: none; margin: 0; padding: 1.25rem 0 0; display: grid; gap: .55rem; border-top: 1px solid #2a2f37; }
+  .z-facts li { display: grid; grid-template-columns: 5.5rem 1fr; gap: .75rem; font-size: .85rem; align-items: baseline; }
+  .z-facts .k { font-family: var(--z-mono); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: #e0b942; }
+  .z-facts .v { color: #d6d9de; font-variant-numeric: tabular-nums; }
+  .z-auth-panel .tagline { margin-top: auto; font-family: var(--z-display); font-size: .78rem; letter-spacing: .14em; text-transform: uppercase; color: #8b9199; }
+  .z-auth-card { background: var(--z-surface); padding: clamp(1.5rem, 4vw, 2.75rem); display: flex; flex-direction: column; justify-content: center; gap: 1.25rem; }
+  .z-auth-card h2 { font-size: 1.5rem; font-weight: 600; margin: 0; }
+  .z-auth-card form { display: flex; flex-direction: column; gap: 1.1rem; margin: 0; }
+  .z-auth-card .aside { font-size: .875rem; color: var(--z-muted); margin: 0; }
+  .z-auth-card .aside a { font-weight: 600; }
+  .z-rules { list-style: none; margin: 0; padding: 0; display: grid; gap: .3rem; font-size: .8rem; color: var(--z-muted); }
+  .z-rules li { display: flex; gap: .5rem; align-items: baseline; }
+  .z-rules li::before { content: ""; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--z-gold); transform: translateY(-2px); }
+  .z-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: .9rem; counter-reset: step; }
+  .z-steps li { display: grid; grid-template-columns: 1.75rem 1fr; gap: .75rem; font-size: .9rem; }
+  .z-steps li::before { counter-increment: step; content: counter(step); font-family: var(--z-mono); font-size: .8rem; font-weight: 500; color: var(--z-gold-deep); border: 1px solid var(--z-line-strong); border-radius: 50%; width: 1.6rem; height: 1.6rem; display: grid; place-items: center; }
+  [data-bs-theme="dark"] .z-steps li::before { color: var(--z-gold); }
+  .z-steps strong { display: block; font-weight: 600; }
+  .z-steps span { color: var(--z-muted); }
+  @media (max-width: 760px) {
+    .z-auth { grid-template-columns: 1fr; margin-top: 1rem; }
+    .z-auth-panel { gap: 1.1rem; }
+    .z-auth-panel .tagline { display: none; }
+  }
+
+  /* ---- page shell for signed-in pages (spawn / home / authorize) ---- */
+  .z-page { max-width: 60rem; margin: clamp(1.5rem, 4vh, 3rem) auto; padding-inline: 16px; display: grid; gap: 1.5rem; }
+  .z-page-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 1rem; }
+  .z-page-head h1 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 600; margin: .25rem 0 0; }
+  .z-page-head p { margin: .35rem 0 0; color: var(--z-muted); max-width: 60ch; }
+  .z-card { background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); padding: 1.25rem; }
+  .z-card h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .75rem; }
+  .z-card p:last-child { margin-bottom: 0; }
+
+  /* ---- spawn profiles (markup emitted by KubeSpawner) ---- */
+  #kubespawner-profiles-list { display: grid; gap: .75rem; margin: 0; }
+  #kubespawner-profiles-list .profile {
+    display: grid !important; grid-template-columns: auto 1fr; gap: 1rem; align-items: start;
+    background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius);
+    padding: 1rem 1.1rem !important; margin: 0; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+  }
+  #kubespawner-profiles-list .profile:hover { border-color: var(--z-line-strong); }
+  #kubespawner-profiles-list .profile:has(input:checked) { border-color: var(--z-gold); box-shadow: 0 0 0 3px var(--z-gold-soft); }
+  #kubespawner-profiles-list .profile .radio { padding: .15rem 0 0 !important; }
+  #kubespawner-profiles-list .profile input[type="radio"] { accent-color: var(--z-gold); width: 18px; height: 18px; margin: 0; }
+  #kubespawner-profiles-list .profile h3 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .2rem; }
+  #kubespawner-profiles-list .profile p { margin: 0; color: var(--z-muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
+  .z-spawn-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; }
+  .z-spawn-actions .z-btn { min-width: 12rem; }
+  .feedback-widget { color: var(--z-gold); }
+  .spawn-error-msg { border-radius: 8px; }
+
+  /* ---- spawn pending ---- */
+  .z-progress { height: 6px; border-radius: 999px; background: var(--z-inset); overflow: hidden; }
+  .z-progress .progress-bar { background: var(--z-gold); height: 100%; transition: width .4s; }
+  .z-progress .progress-bar.bg-danger { background: var(--z-bad) !important; }
+  #progress-message { color: var(--z-ink-2); margin: .75rem 0 0; min-height: 1.5em; }
+  #progress-details summary { cursor: pointer; color: var(--z-muted); font-size: .85rem; }
+  #progress-log { font-family: var(--z-mono); font-size: .78rem; color: var(--z-muted); margin-top: .5rem; display: grid; gap: .2rem; }
+
+  /* ---- tables (authorize) ---- */
+  .z-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  .z-table th { text-align: left; font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; padding: .5rem .75rem; border-bottom: 1px solid var(--z-line); }
+  .z-table td { padding: .7rem .75rem; border-bottom: 1px solid var(--z-line); vertical-align: middle; }
+  .z-table tr:last-child td { border-bottom: 0; }
+  .z-table .actions { display: flex; gap: .5rem; justify-content: flex-end; flex-wrap: wrap; }
+  .z-table-wrap { overflow-x: auto; }
+  .z-empty { color: var(--z-muted); font-size: .9rem; margin: 0; }
+
+  [data-bs-theme="dark"] .modal-content { background: var(--z-surface); color: var(--z-ink); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 {% endblock stylesheet %}
 
 {% block nav_bar_left_items %}
     {{ super() }}
-    <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change Password</a></li>
+    <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
     {% if user and user.admin %}
-        <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Authorize Users</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Approve users</a></li>
     {% endif %}
 {% endblock %}
-
-{% block footer %}
-{{ super() }}
-{# Shown only to logged-out visitors, i.e. the login / signup / change-password
-   pages. Gating on `user` rather than on the request path because JupyterHub's
-   template namespace has no `request` object -- referencing one raises
-   UndefinedError and turns every auth page into a 500. Login-specific copy goes
-   through announcement_login instead (set in extraConfig); NativeAuthenticator's
-   signup.html has no equivalent hook, so this block carries the signup rules. #}
-{% if user is not defined or not user %}
-  <div class="fz-help">
-    Accounts need administrator approval before first sign-in, and you'll be
-    emailed when yours is active.<br>
-    Usernames must be lowercase letters, digits or hyphens (3–31 characters).
-  </div>
-{% endif %}
-{% endblock footer %}

@@ -1,0 +1,76 @@
+{% extends "page.html" %}
+{# Overrides nativeauthenticator/templates/authorization-area.html. The handler
+   passes `users` (UserInfo rows: username, email, is_authorized, has_2fa) and
+   `ask_email`. Pending requests are the reason an admin opens this page, so
+   they come first with Approve as the primary action; everyone else follows.
+   Row ids are kept (the handler redirects back to #username after an action). #}
+
+{% block title %}Approve users · ZAI Notebooks{% endblock %}
+
+{% block main %}
+{% set pending = users | rejectattr('is_authorized') | list %}
+{% set active  = users | selectattr('is_authorized') | list %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">Administrator</div>
+      <h1>Approve users</h1>
+      <p>Approving someone lets them sign in and start a server. There are 7 GPU slices on this machine; an approved user holds one only while their server runs.</p>
+    </div>
+    <span class="z-pill {% if pending %}is-warn{% else %}is-ok{% endif %}">{{ pending | length }} waiting</span>
+  </div>
+
+  <section class="z-card">
+    <h2>Waiting for approval</h2>
+    {% if pending %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Username</th>{% if ask_email %}<th>Email</th>{% endif %}<th></th></tr></thead>
+        <tbody>
+          {% for u in pending %}
+          <tr id="{{ u.username }}">
+            <td><strong>{{ u.username }}</strong></td>
+            {% if ask_email %}<td><a href="mailto:{{ u.email }}">{{ u.email }}</a></td>{% endif %}
+            <td class="actions">
+              <a class="z-btn is-sm" role="button" href="{{ base_url }}authorize/{{ u.username }}">Approve</a>
+              <a class="z-btn is-sm is-danger" role="button" href="{{ base_url }}discard/{{ u.username }}">Discard</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="z-empty">No requests waiting. New sign-ups appear here.</p>
+    {% endif %}
+  </section>
+
+  <section class="z-card">
+    <h2>Approved users</h2>
+    {% if active %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Username</th>{% if ask_email %}<th>Email</th>{% endif %}<th>2FA</th><th></th></tr></thead>
+        <tbody>
+          {% for u in active %}
+          <tr id="{{ u.username }}">
+            <td><strong>{{ u.username }}</strong></td>
+            {% if ask_email %}<td>{% if u.email %}<a href="mailto:{{ u.email }}">{{ u.email }}</a>{% else %}<span class="z-empty">—</span>{% endif %}</td>{% endif %}
+            <td>{% if u.has_2fa %}<span class="z-pill is-ok">on</span>{% else %}<span class="z-pill">off</span>{% endif %}</td>
+            <td class="actions">
+              <a class="z-btn is-sm is-quiet" role="button" href="{{ base_url }}change-password/{{ u.username }}">Reset password</a>
+              <a class="z-btn is-sm is-quiet" role="button" href="{{ base_url }}authorize/{{ u.username }}">Revoke</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="z-empty">Nobody approved yet.</p>
+    {% endif %}
+  </section>
+
+  <p class="z-empty">To stop a running server, free a GPU slice or delete an account, use the <a href="{{ base_url }}admin">admin panel</a>.</p>
+</div>
+{% endblock %}

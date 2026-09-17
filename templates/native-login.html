@@ -1,0 +1,73 @@
+{% extends "page.html" %}
+{# Overrides nativeauthenticator/templates/native-login.html. Field names, ids
+   and the form action are unchanged: the handler and the hub's tests rely on
+   username / password / _xsrf and #login_submit. #}
+
+{% block title %}Sign in · ZAI Notebooks{% endblock %}
+
+{% block announcement %}{% endblock %}
+
+{% block script %}
+{{ super() }}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var eye = document.getElementById('eye'), pwd = document.getElementById('password_input');
+    eye.addEventListener('click', function () {
+      var show = pwd.getAttribute('type') === 'password';
+      pwd.setAttribute('type', show ? 'text' : 'password');
+      eye.textContent = show ? 'HIDE' : 'SHOW';
+      eye.setAttribute('aria-pressed', show);
+    });
+  });
+</script>
+{% endblock script %}
+
+{% block main %}
+<div class="z-auth-outer">
+<main class="z-auth">
+  {% include "zai-panel.html" %}
+  <section class="z-auth-card" id="login-main">
+    <h2>Sign in</h2>
+
+    {% if login_error %}
+      <p class="z-alert is-bad login_error" role="alert">
+        {%- if 'not been authorized' in login_error -%}
+          Your account is still waiting for approval. You'll get access once an administrator approves it.
+        {%- else -%}
+          {{ login_error }}
+        {%- endif -%}
+      </p>
+    {% endif %}
+
+    <form action="{{ login_url }}?next={{ next }}" method="post" role="form">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <div class="z-field">
+        <label for="username_input">Username</label>
+        <input id="username_input" class="z-input" type="text" name="username" value="{{ username }}"
+               autocapitalize="off" autocorrect="off" autocomplete="username" autofocus required>
+      </div>
+      <div class="z-field">
+        <label for="password_input">Password</label>
+        <div class="z-input-wrap">
+          <input id="password_input" class="z-input" type="password" name="password"
+                 autocapitalize="off" autocorrect="off" autocomplete="current-password" required>
+          <button id="eye" class="z-eye" type="button" aria-label="Show password" aria-pressed="false">SHOW</button>
+        </div>
+      </div>
+      {% if two_factor_auth %}
+      <div class="z-field">
+        <label for="2fa_input">Two-factor code</label>
+        <input id="2fa_input" class="z-input" type="text" name="2fa" autocapitalize="off" autocorrect="off" placeholder="Leave empty if you don't use 2FA">
+      </div>
+      {% endif %}
+      <input type="submit" id="login_submit" class="z-btn is-block" value="Sign in">
+    </form>
+
+    {% if enable_signup %}
+    <p class="aside">No account yet? <a href="{{ base_url }}signup">Request access</a>.</p>
+    {% endif %}
+    <p class="aside">Sign-in locks for 15 minutes after 5 failed attempts. Forgotten your password? An administrator can reset it.</p>
+  </section>
+</main>
+</div>
+{% endblock main %}

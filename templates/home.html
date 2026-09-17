@@ -1,0 +1,36 @@
+{% extends "page.html" %}
+{# Overrides jupyterhub/templates/home.html. The stock home.js binds #stop and
+   #start, so both ids are kept. Named servers are off on this deploy. #}
+{% if announcement_home is string %}{% set announcement = announcement_home %}{% endif %}
+
+{% block title %}Home · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page" style="max-width:40rem">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">{{ user.name }}</div>
+      <h1>Your server</h1>
+    </div>
+    {% if default_server.active %}<span class="z-pill is-ok">running</span>{% else %}<span class="z-pill">stopped</span>{% endif %}
+  </div>
+  <div class="z-card">
+    {% if default_server.active %}
+      <p>Your JupyterLab is running{% if default_server.ready %} and holding its resources{% endif %}. Stopping it frees the GPU slice for someone else; your files stay.</p>
+      <div style="display:flex;gap:.75rem;flex-wrap:wrap">
+        <a id="start" role="button" class="z-btn" href="{{ url }}">Open JupyterLab</a>
+        <a id="stop" role="button" class="z-btn is-danger">Stop server</a>
+      </div>
+    {% else %}
+      <p>Nothing running. Starting takes about fifteen seconds; you'll choose a size first.</p>
+      <a id="start" role="button" class="z-btn" href="{{ url }}">Start server</a>
+    {% endif %}
+  </div>
+  <p class="z-empty">Servers stop on their own after 60 minutes idle. Your home directory (10 GB) is kept between sessions; <code>~/team</code> is shared with everyone.</p>
+</div>
+{% endblock main %}
+
+{% block script %}
+{{ super() }}
+<script type="text/javascript">require(["home"]);</script>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "page.html" %}
+{# Overrides jupyterhub/templates/spawn.html. The profile radios are emitted by
+   KubeSpawner into spawner_options_form; the form id and the feedback markup
+   are what the stock submit handler below expects. #}
+{% if announcement_spawn is string %}{% set announcement = announcement_spawn %}{% endif %}
+
+{% block title %}Start server · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">{% if for_user and user.name != for_user.name %}Starting a server for {{ for_user.name }}{% else %}Start your server{% endif %}</div>
+      <h1>Choose a size</h1>
+      <p>There are 7 GPU slices for the whole team, and one is yours only while your server runs. If today's work never touches CUDA, pick CPU-only and leave a slice for someone training.</p>
+    </div>
+  </div>
+
+  {% if error_message %}
+    <p class="z-alert is-bad spawn-error-msg" role="alert">Couldn't start: {{ error_message }}</p>
+  {% elif error_html_message %}
+    <p class="z-alert is-bad spawn-error-msg" role="alert">{{ error_html_message | safe }}</p>
+  {% endif %}
+
+  <form enctype="multipart/form-data" id="spawn_form" action="{{ url }}" method="post" role="form">
+    {{ spawner_options_form | safe }}
+    <div class="z-spawn-actions feedback-container">
+      <button type="submit" class="z-btn">Start server</button>
+      <div class="feedback-widget hidden"><i class="fa fa-spinner"></i> Starting…</div>
+    </div>
+  </form>
+
+  <p class="z-empty">Servers stop on their own after 60 minutes idle. Everything in your home directory is kept; anything in <code>/tmp</code> or in memory is not.</p>
+</div>
+{% endblock main %}
+
+{% block script %}
+{{ super() }}
+<script>
+  $('form').submit((e) => {
+    var form = $(e.target);
+    form.find('.feedback-container>button').attr('disabled', true);
+    form.find('.feedback-container>*').toggleClass('hidden');
+    form.find('.feedback-widget>i').toggleClass('fa-pulse');
+  });
+</script>
+{% endblock %}
