@@ -41,6 +41,22 @@ rc=$(helm -n jupyterhub get values jupyterhub --all -o json 2>/dev/null \
      | python3 -c 'import json,sys; print((json.load(sys.stdin).get("singleuser",{}).get("extraPodConfig") or {}).get("runtimeClassName") or "")' 2>/dev/null)
 chk "no default nvidia runtime for all pods" "${rc:-unset}" "$([ -z "$rc" ] && echo ok || echo bad)"
 
+# Isolation backstops. Each of these failing silently re-opens a path between
+# users or from a notebook to the node.
+ps=$(kubectl get ns jupyterhub -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null)
+chk "Pod Security enforced on jupyterhub" "${ps:-none}" "$([ "$ps" = baseline ] || [ "$ps" = restricted ] && echo ok || echo bad)"
+
+np=$(kubectl -n jupyterhub get networkpolicy singleuser -o jsonpath='{.spec.egress[*].to[*].ipBlock.except}' 2>/dev/null)
+chk "notebooks cannot reach node (100.64/10)" "$(echo "$np" | grep -q '100.64.0.0/10' && echo blocked || echo OPEN)" \
+    "$(echo "$np" | grep -q '100.64.0.0/10' && echo ok || echo bad)"
+
+aa=$(helm -n jupyterhub get values jupyterhub --all -o json 2>/dev/null \
+     | python3 -c 'import json,sys; print(json.load(sys.stdin)["hub"]["config"]["JupyterHub"].get("admin_access"))' 2>/dev/null)
+chk "admins cannot open user servers" "admin_access=${aa:-?}" "$([ "$aa" = False ] && echo ok || echo bad)"
+
+rb=$(kubectl auth can-i list nodes --as=system:serviceaccount:jupyterhub:hub 2>/dev/null)
+chk "hub can read node capacity" "${rb:-no}" "$([ "$rb" = yes ] && echo ok || echo bad)"
+
 if [ -n "${PUBLIC_HOSTNAME:-}" ]; then
     c=$(curl -s -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOSTNAME}/hub/login")
     chk "https://${PUBLIC_HOSTNAME}/hub/login" "HTTP $c" "$([ "$c" = 200 ] && echo ok || echo bad)"
@@ -50,10 +66,14 @@ fi
 adm=$(kubectl -n jupyterhub exec deploy/hub -- python -c "
 import sqlite3
 c=sqlite3.connect('/srv/jupyterhub/jupyterhub.sqlite')
-print(sum(1 for _ in c.execute(\"select 1 from users_info where username='admin'\")))
-" 2>/dev/null || echo 0)
-chk "admin account claimed" "$([ "${adm:-0}" -ge 1 ] && echo yes || echo 'NO - anyone can register it')" \
-    "$([ "${adm:-0}" -ge 1 ] && echo ok || echo bad)"
+r=c.execute(\"select has_2fa from users_info where username='admin'\").fetchone()
+print('none' if r is None else ('2fa' if r[0] else 'no2fa'))
+" 2>/dev/null || echo none)
+case "$adm" in
+    2fa)   chk "admin account claimed" "yes, with 2FA" ok ;;
+    no2fa) chk "admin account claimed" "yes, WITHOUT 2FA" bad ;;
+    *)     chk "admin account claimed" "NO - anyone can register it" bad ;;
+esac
 
 f=$(kubectl -n jupyterhub logs deploy/hub --tail=500 2>/dev/null | grep -c "403: Forbidden")
 chk "idle culler authorised" "$f 403s in last 500 lines" "$([ "${f:-0}" -eq 0 ] && echo ok || echo bad)"

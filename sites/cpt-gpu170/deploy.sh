@@ -11,6 +11,7 @@
 #   sudo -E sites/cpt-gpu170/build-images.sh   # once, and after image changes
 #   sudo -E sites/cpt-gpu170/deploy.sh
 #   sudo -E sites/cpt-gpu170/verify.sh
+#   sudo    sites/cpt-gpu170/gpu-usage.sh      # who holds which slice
 #
 # Run as root: the only kubeconfig on this host is the root-owned admin.conf.
 set -euo pipefail
@@ -38,13 +39,28 @@ need "singleuser image imported"      "ctr -n k8s.io images ls -q | grep -q 'loc
 need "no k3s on this host"            '! command -v k3s >/dev/null'
 [ "$fail" = 0 ] || { echo "pre-flight failed (images missing? run $SITE/build-images.sh)" >&2; exit 1; }
 
-echo "==> shared WEKA volumes"
+echo "==> namespace, Pod Security, RBAC"
 kubectl create namespace jupyterhub --dry-run=client -o yaml | kubectl apply -f -
+# Baseline is enforced: no privileged pods, hostPath, host network or added
+# capabilities in the namespace where user code runs -- a backstop if a values
+# change ever reintroduces one. Restricted is reported but not enforced; the
+# chart's own pods do not all meet it.
+kubectl label namespace jupyterhub --overwrite \
+    pod-security.kubernetes.io/enforce=baseline \
+    pod-security.kubernetes.io/warn=restricted \
+    pod-security.kubernetes.io/audit=restricted
+kubectl apply -f "$SITE/hub-rbac.yaml"
+
+echo "==> shared WEKA volumes"
 kubectl apply -f "$SITE/shared-pvcs.yaml"
 
 echo "==> JupyterHub"
 KUBECONFIG="$KUBECONFIG" VALUES_OVERLAY="$SITE/values.yaml" SHARED_HOSTPATH=0 \
     scripts/05-jupyterhub.sh
+
+echo "==> admin account"
+# Before the tunnel, so `admin` is never reachable while unclaimed.
+"$SITE/claim-admin.sh" "${ADMIN_EMAIL:-}"
 
 if [ -n "${TUNNEL_TOKEN:-}" ]; then
     echo "==> Cloudflare tunnel"

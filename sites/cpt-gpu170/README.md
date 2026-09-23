@@ -23,10 +23,11 @@ of them are harmful, so this directory replaces them.
 
 ```bash
 cp .env.example .env            # CAIMEX_API_KEY; TUNNEL_TOKEN + PUBLIC_HOSTNAME if using the tunnel
+                                # optional: ADMIN_EMAIL for the admin account
 sudo -E sites/cpt-gpu170/build-images.sh    # ~20-40 min the first time
-sudo -E sites/cpt-gpu170/deploy.sh
-# claim `admin` over a port-forward BEFORE any public hostname is live (see top-level README)
+sudo -E sites/cpt-gpu170/deploy.sh          # prints the admin password + 2FA key ONCE
 sudo -E sites/cpt-gpu170/verify.sh
+sudo    sites/cpt-gpu170/gpu-usage.sh       # any time: who holds which slice
 ```
 
 Everything runs as root because the only kubeconfig here is
@@ -73,6 +74,75 @@ tests were already present when this was written.
 To populate `~/shared`, mount `jupyter-shared-datasets` read-write from an admin
 pod, or copy into its directory on the WEKA mount.
 
+## Seeing who is on which GPU
+
+**Admins:** `sudo sites/cpt-gpu170/gpu-usage.sh` prints:
+
+- **Pools:** used, free and total for each MIG profile, across *every*
+  namespace, with a `FULL` flag.
+- **Slices:** all 28 MIG instances by physical GPU, with VRAM in use, compute
+  activity and the pod holding each one. This comes from the GPU Operator's DCGM
+  exporter.
+- **Holders:** a JupyterHub user name for each slice in use.
+- **Waiting:** servers stuck `Pending` for a full pool.
+
+**Users:** the spawn page shows live capacity, e.g. `GPU — Standard — 5 of 16
+free`, and marks a pool FULL when it is. Choosing a full pool is refused at once
+with a clear message, instead of a 10-minute spinner and a timeout
+(`03-gpu-capacity` in `values.yaml`; the hub reads node capacity through
+`hub-rbac.yaml`). The spawn page counts only JupyterHub's own servers. If other
+namespaces take slices, the scheduler is still the final word, and
+`gpu-usage.sh` shows the full picture.
+
+## Authentication and isolation
+
+### Login
+
+| Control | Setting |
+|---|---|
+| Signup | Admin approval required (`open_signup: false`); optional reCAPTCHA |
+| Passwords | ≥ 12 characters, common passwords rejected |
+| Brute force | Account locks for 15 min after 5 failures |
+| Two-factor | Offered at signup (`allow_2fa`). **The admin account is created with 2FA on** |
+| Admin account | Created by `claim-admin.sh` during deploy, *before* any tunnel exists, with a random password. It is never claimable by a stranger |
+| Sessions | Expire after 1 day; cookies marked `Secure` |
+| Admin powers | `admin_access: false`: admins manage users and servers but **cannot open a user's server** |
+
+### Between users
+
+| Layer | Isolation |
+|---|---|
+| GPU | MIG gives each slice its own memory and compute in hardware. CPU-only servers don't use the NVIDIA runtime, so they see no GPU |
+| Files | A separate WEKA volume per user, size-capped by WEKA. No user can mount another's |
+| Network | Notebooks accept connections only from the hub and proxy, not from each other. Outbound traffic can't reach private ranges, cloud metadata, **or the node itself** (`100.64.0.0/10`, which the chart would otherwise allow) |
+| Kubernetes | Notebooks get no service-account token, so they can't call the cluster API |
+| Container | Non-root uid 1000, no privilege escalation, all Linux capabilities dropped, default seccomp. The namespace enforces the *baseline* Pod Security Standard |
+| Memory | Each server has its own `/dev/shm` and RAM limit |
+
+`verify.sh` checks the Pod Security label, the node egress block,
+`admin_access`, and that `admin` exists with 2FA.
+
+### Shared by design (decide whether you want these)
+
+- **`~/team`** is read-write for everyone. Anyone can change or delete anyone
+  else's files there. Remove `shared-team` from `values.yaml` if you don't want it.
+- **Server sharing:** a user can grant a colleague access to *their own*
+  server (`shares!user` in the base values). It is opt-in by the owner, but the
+  colleague then has full access to that server and its home directory.
+- **The caimex API key** is shared by all users and readable in every server.
+  Anyone can copy it, and usage can't be traced to a person.
+
+### Strongly recommended before going public
+
+1. **Cloudflare Access** in front of the hostname (Zero Trust → Access →
+   Applications), with your SSO or email one-time codes. Then the login page
+   isn't reachable at all by anyone outside your allow-list. This is the
+   biggest single improvement, and it is dashboard configuration, not code.
+2. Set `RECAPTCHA_KEY` / `RECAPTCHA_SECRET` in `.env` so bots can't fill the
+   approval queue.
+3. Tell users to tick "two-factor" at signup. NativeAuthenticator can't
+   require it, and can't add it later.
+
 ## Changing the MIG layout
 
 Do it through the GPU Operator, not `nvidia-smi`. Stop all user servers first,
@@ -83,7 +153,12 @@ manage that label, so coordinate with whoever owns the cluster.
 
 ## Not verified yet
 
-Written and checked against the live cluster's configuration, and the chart
-renders with this overlay, but **nothing has been deployed**. In particular,
-nobody has yet confirmed that the BuildKit pod can reach the caimex installer
-and PyPI from inside the cluster.
+Written and checked against the live cluster's configuration. The chart
+renders with this overlay, and `gpu-usage.sh` has run against the live cluster.
+**Nothing has been deployed**, so these are still unproven:
+
+- whether the BuildKit pod can reach the caimex installer and PyPI
+- the spawn-page capacity hook and the full-pool refusal message
+- `claim-admin.sh` writing to a real hub database, and 2FA login with its key
+- that notebooks start with all capabilities dropped (the docker-stacks
+  start script is not expected to need any)

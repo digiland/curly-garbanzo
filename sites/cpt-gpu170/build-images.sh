@@ -25,7 +25,9 @@ BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-docker.io/moby/buildkit:v0.23.2}"
 # /local is the 14 TB NVMe scratch volume; the singleuser tarball is >10 GB and
 # / has well under 100 GB free.
 OUT="${BUILD_OUT:-/local/zai-build}"
-NS=jupyterhub
+# Its own namespace: the builder is privileged, and jupyterhub enforces the
+# baseline Pod Security Standard, which (rightly) refuses privileged pods.
+NS=zai-build
 JOB=zai-image-build
 SRC="$(pwd)"
 NODE="$(hostname)"
@@ -98,6 +100,6 @@ echo "==> importing into containerd (k8s.io namespace)"
 ctr -n k8s.io images import "$OUT/hub.tar"
 ctr -n k8s.io images import "$OUT/singleuser.tar"
 rm -f "$OUT/hub.tar" "$OUT/singleuser.tar"
-kubectl -n "$NS" delete job "$JOB" --ignore-not-found
+kubectl delete namespace "$NS" --ignore-not-found --wait=false
 
 ctr -n k8s.io images ls -q | grep -E 'local/(k8s-hub-native|pytorch-caimex)'

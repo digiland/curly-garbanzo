@@ -22,7 +22,130 @@
 # Helm merges maps key-by-key and REPLACES lists wholesale, which is why the
 # profile list and the volume lists are restated in full here.
 
+hub:
+  config:
+    JupyterHub:
+      # Admins can stop, start and approve users, but NOT open a user's running
+      # server. With this true, one admin session (or one stolen admin cookie)
+      # is a shell in every user's environment and home directory.
+      admin_access: false
+      # Sessions end after a day instead of the default fourteen, so a cookie
+      # lifted from a shared machine stops working by tomorrow.
+      cookie_max_age_days: 1
+      # Browsers only ever reach the hub over HTTPS (Cloudflare terminates TLS),
+      # but the hub sees plain HTTP on its last hop and would otherwise issue
+      # cookies without the Secure flag.
+      cookie_options: {secure: true}
+      tornado_settings:
+        xsrf_cookie_kwargs: {secure: true}
+    NativeAuthenticator:
+      # Offers TOTP (authenticator app) at signup. NativeAuthenticator cannot
+      # force it, so it is opt-in per user -- tell admins to turn it on.
+      allow_2fa: true
+    KubeSpawner:
+      # Defence in depth on top of the chart's defaults (non-root uid 1000, no
+      # privilege escalation, no service-account token): no Linux capabilities
+      # and the runtime's default syscall filter. Merged into the container
+      # securityContext KubeSpawner already builds, not a replacement for it.
+      container_security_context:
+        capabilities: {drop: [ALL]}
+        seccompProfile: {type: RuntimeDefault}
+  extraConfig:
+    # Spawn-page capacity for the MIG pools, and a clear refusal when one is
+    # full. Without this, a user who picks a full pool sits on a spinner until
+    # startTimeout (10 minutes) and then gets a generic failure.
+    #
+    # Totals come from node allocatable (needs sites/cpt-gpu170/hub-rbac.yaml);
+    # usage counts pods in THIS namespace only. Slices taken by workloads in
+    # other namespaces are not seen, so the scheduler stays the final word --
+    # this is a guide for people, not an admission controller. Any failure to
+    # read the API falls back to the plain profile list.
+    03-gpu-capacity: |
+      import copy
+
+      _STATIC_PROFILES = c.KubeSpawner.profile_list
+
+      def _mig_resource(profile):
+          limits = (profile.get("kubespawner_override") or {}).get("extra_resource_limits") or {}
+          return next((k for k in limits if k.startswith("nvidia.com/mig-")), None)
+
+      async def _mig_capacity(spawner):
+          total, used = {}, {}
+          for node in (await spawner.api.list_node()).items:
+              for k, v in (node.status.allocatable or {}).items():
+                  if k.startswith("nvidia.com/mig-"):
+                      total[k] = total.get(k, 0) + int(v)
+          pods = await spawner.api.list_namespaced_pod(spawner.namespace)
+          for pod in pods.items:
+              if pod.status.phase not in ("Pending", "Running"):
+                  continue
+              for ctr in pod.spec.containers:
+                  limits = (ctr.resources and ctr.resources.limits) or {}
+                  for k, v in limits.items():
+                      if k.startswith("nvidia.com/mig-"):
+                          used[k] = used.get(k, 0) + int(v)
+          return {k: (max(total[k] - used.get(k, 0), 0), total[k]) for k in total}
+
+      async def _profile_list(spawner):
+          try:
+              cap = await _mig_capacity(spawner)
+          except Exception as e:
+              spawner.log.warning("MIG capacity lookup failed, showing plain profiles: %s", e)
+              return _STATIC_PROFILES
+          profiles = copy.deepcopy(_STATIC_PROFILES)
+          for p in profiles:
+              res = _mig_resource(p)
+              if res in cap:
+                  free, total = cap[res]
+                  # Safe to edit: every profile has an explicit slug, so the
+                  # changing name does not change which profile is selected.
+                  p["display_name"] += f" — {free} of {total} free"
+                  if free == 0:
+                      p["description"] = ("FULL right now. Pick another option, or try "
+                                          "again when someone stops their server. "
+                                          + p["description"])
+          return profiles
+
+      async def _refuse_full_pool(spawner):
+          slug = (spawner.user_options or {}).get("profile")
+          profile = next((p for p in _STATIC_PROFILES if p.get("slug") == slug), None)
+          res = _mig_resource(profile) if profile else None
+          if not res:
+              return
+          try:
+              cap = await _mig_capacity(spawner)
+          except Exception:
+              return          # cannot tell; let the scheduler decide
+          free, total = cap.get(res, (1, 0))
+          if free == 0:
+              raise RuntimeError(
+                  f"All {total} '{profile['display_name']}' GPU slices are in use. "
+                  "Choose another option, or try again later.")
+
+      c.KubeSpawner.profile_list = _profile_list
+      c.KubeSpawner.pre_spawn_hook = _refuse_full_pool
+
 singleuser:
+  # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
+  # metadata server, but this node's own address is 100.70.88.4 -- carrier-grade
+  # NAT space (100.64.0.0/10), which the chart counts as "public". Left alone, a
+  # notebook can reach every host port on the node: kubelet, the API server,
+  # node exporters, ingress. Replace the chart's public-internet rule with one
+  # that also excludes CGNAT and link-local. DNS stays allowed by the chart's
+  # dnsPorts* rules; the hub and proxy by its own policies.
+  networkPolicy:
+    egressAllowRules:
+      nonPrivateIPs: false
+    egress:
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+                - 100.64.0.0/10
+                - 169.254.0.0/16
   # The base file puts EVERY pod on the nvidia runtime. Here that is a leak, not
   # a convenience: the toolkit on this node accepts NVIDIA_VISIBLE_DEVICES from
   # unprivileged pods, and the CUDA notebook image sets it to `all`, so a
@@ -67,6 +190,7 @@ singleuser:
   # Guarantees are what the scheduler actually reserves, and stay small.
   profileList:
     - display_name: "GPU — Standard"
+      slug: gpu-standard   # stable id: display_name gains a live "N free" suffix
       description: "1 MIG slice (1g, 32 GB VRAM, 16 SMs), 32 GB RAM, 4 CPU. Start here."
       default: true
       kubespawner_override:
@@ -77,6 +201,7 @@ singleuser:
         extra_pod_config: {runtimeClassName: nvidia}
         extra_resource_limits: {nvidia.com/mig-1g.35gb: "1"}
     - display_name: "GPU — Large"
+      slug: gpu-large   # stable id: display_name gains a live "N free" suffix
       description: "1 MIG slice (2g, 32 GB VRAM, 32 SMs — twice the compute), 64 GB RAM, 8 CPU."
       kubespawner_override:
         cpu_limit: 8
@@ -86,6 +211,7 @@ singleuser:
         extra_pod_config: {runtimeClassName: nvidia}
         extra_resource_limits: {nvidia.com/mig-2g.35gb: "1"}
     - display_name: "CPU only — no GPU"
+      slug: cpu   # stable id: display_name gains a live "N free" suffix
       description: "16 GB RAM, 4 CPU, no GPU. Leaves a MIG slice free for someone who needs it."
       kubespawner_override:
         cpu_limit: 4
