@@ -1,0 +1,95 @@
+# Site overlay for cpt-gpu170. Apply AFTER the base file, never instead of it:
+#
+#   helm upgrade -i jupyterhub jupyterhub/jupyterhub -n jupyterhub \
+#     -f charts/jupyterhub-values.yaml \
+#     -f sites/cpt-gpu170/values.yaml
+#
+# (sites/cpt-gpu170/deploy.sh does exactly this.)
+#
+# The base file assumes a k3s VM with one H200 split 7 x 1g.18gb and advertised
+# as plain nvidia.com/gpu. This box is different in the three ways that matter:
+#
+#   GPUs     8 x H200, MIG managed by the GPU Operator (config h200-35gb-mixed,
+#            strategy MIXED): 16 x nvidia.com/mig-1g.35gb on GPUs 0-3 and
+#            12 x nvidia.com/mig-2g.35gb on GPUs 4-7. nvidia.com/gpu is 0, so a
+#            profile asking for it stays Pending forever.
+#   Storage  no local-path. wekafs-dir (WEKA CSI, capacityEnforcement: HARD)
+#            gives RWX volumes with REAL size limits -- it replaces both the
+#            hostPath shared folders and scripts/07-08's XFS quota machinery.
+#   Runtime  containerd's default is runc; only the `nvidia` RuntimeClass injects
+#            GPUs. See extraPodConfig below.
+#
+# Helm merges maps key-by-key and REPLACES lists wholesale, which is why the
+# profile list and the volume lists are restated in full here.
+
+singleuser:
+  # The base file puts EVERY pod on the nvidia runtime. Here that is a leak, not
+  # a convenience: the toolkit on this node accepts NVIDIA_VISIBLE_DEVICES from
+  # unprivileged pods, and the CUDA notebook image sets it to `all`, so a
+  # "CPU only" server would be handed every GPU on the box outside the
+  # scheduler's accounting. `null` deletes the key; each GPU profile below
+  # re-adds it for itself, where the device plugin has allocated a slice.
+  extraPodConfig:
+    runtimeClassName: null
+
+  storage:
+    type: dynamic
+    # WEKA enforces this (capacityEnforcement: HARD), unlike local-path. The
+    # filesystem behind wekafs-dir is 1000 GB in total and shared with the
+    # claims in shared-pvcs.yaml -- 20 Gi x 25 users + 300 + 150 Gi fits.
+    # Raise it only if the WEKA filesystem grows.
+    capacity: 20Gi
+    dynamic:
+      storageClass: wekafs-dir
+    extraVolumes:
+      # One RWX claim each, created by sites/cpt-gpu170/shared-pvcs.yaml.
+      - name: shared-datasets
+        persistentVolumeClaim: {claimName: jupyter-shared-datasets}
+      - name: shared-team
+        persistentVolumeClaim: {claimName: jupyter-shared-team}
+      # 2 TiB of host RAM; DataLoader workers get room to breathe.
+      - name: dshm
+        emptyDir: {medium: Memory, sizeLimit: 8Gi}
+    extraVolumeMounts:
+      - name: shared-datasets
+        mountPath: /home/jovyan/shared
+        readOnly: true              # curated by admins; users cannot mutate it
+      - name: shared-team
+        mountPath: /home/jovyan/team
+      - name: dshm
+        mountPath: /dev/shm
+
+  # Two GPU tiers, one per MIG profile the GPU Operator exposes. Both have the
+  # same ~32 GB of VRAM; "Large" doubles the compute (32 SMs vs 16).
+  #
+  # Worst case if every slice is taken: 16 x 32G + 12 x 64G = 1.3 TB of limits
+  # against 2 TiB, and 16 x 4 + 12 x 8 = 160 CPU against 191 allocatable.
+  # Guarantees are what the scheduler actually reserves, and stay small.
+  profileList:
+    - display_name: "GPU — Standard"
+      description: "1 MIG slice (1g, 32 GB VRAM, 16 SMs), 32 GB RAM, 4 CPU. Start here."
+      default: true
+      kubespawner_override:
+        cpu_limit: 4
+        cpu_guarantee: 1
+        mem_limit: "32G"
+        mem_guarantee: "2G"
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/mig-1g.35gb: "1"}
+    - display_name: "GPU — Large"
+      description: "1 MIG slice (2g, 32 GB VRAM, 32 SMs — twice the compute), 64 GB RAM, 8 CPU."
+      kubespawner_override:
+        cpu_limit: 8
+        cpu_guarantee: 2
+        mem_limit: "64G"
+        mem_guarantee: "4G"
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/mig-2g.35gb: "1"}
+    - display_name: "CPU only — no GPU"
+      description: "16 GB RAM, 4 CPU, no GPU. Leaves a MIG slice free for someone who needs it."
+      kubespawner_override:
+        cpu_limit: 4
+        cpu_guarantee: 0.5
+        mem_limit: "16G"
+        mem_guarantee: "1G"
+        extra_resource_limits: {}

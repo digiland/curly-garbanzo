@@ -3,19 +3,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f .env ] && set -a && . ./.env && set +a
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+# k3s by default; a site on another distribution passes its own.
+export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 CHART_VERSION="${CHART_VERSION:-4.4.2}"
 
 kubectl create namespace jupyterhub --dry-run=client -o yaml | kubectl apply -f -
 
-echo "==> shared directories"
 # Mounted into every server as ~/shared (read-only) and ~/team (read-write).
 # 1000:100 is jovyan:users in the singleuser image; without this the mounts are
 # root-owned and the team space is read-only in practice.
-mkdir -p /srv/jupyter-shared/datasets /srv/jupyter-shared/team
-chown -R 1000:100 /srv/jupyter-shared
-chmod 755 /srv/jupyter-shared/datasets
-chmod 2775 /srv/jupyter-shared/team   # setgid: files stay group-writable
+# SHARED_HOSTPATH=0 for an overlay that backs these with PVCs instead.
+if [ "${SHARED_HOSTPATH:-1}" = 1 ]; then
+    echo "==> shared directories"
+    mkdir -p /srv/jupyter-shared/datasets /srv/jupyter-shared/team
+    chown -R 1000:100 /srv/jupyter-shared
+    chmod 755 /srv/jupyter-shared/datasets
+    chmod 2775 /srv/jupyter-shared/team   # setgid: files stay group-writable
+fi
 
 echo "==> branding templates"
 # A ConfigMap rather than a rebuild of the hub image, so copy and CSS changes
@@ -68,9 +72,13 @@ fi
 
 helm repo add jupyterhub https://hub.jupyter.org/helm-chart/ >/dev/null 2>&1 || true
 helm repo update jupyterhub
+# VALUES_OVERLAY: an extra values file applied after the base, e.g.
+# sites/<host>/values.yaml.
+VALUES=(-f charts/jupyterhub-values.yaml)
+[ -n "${VALUES_OVERLAY:-}" ] && VALUES+=(-f "$VALUES_OVERLAY")
 helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
-  -f charts/jupyterhub-values.yaml --wait --timeout 10m
+  "${VALUES[@]}" --wait --timeout 10m
 
 kubectl -n jupyterhub get pods
 cat <<'MSG'

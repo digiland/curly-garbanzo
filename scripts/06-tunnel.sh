@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f .env ] && set -a && . ./.env && set +a
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 [ -n "${TUNNEL_TOKEN:-}" ] || { echo "TUNNEL_TOKEN not set (see .env.example)"; exit 1; }
 
 install -m 0644 host/99-cloudflared-quic.conf /etc/sysctl.d/99-cloudflared-quic.conf

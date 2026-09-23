@@ -37,6 +37,7 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `docs/BUILD-NOTES.md` | Full build log: what was on the box, what broke, how it was fixed |
 | `docs/OPERATIONS.md` | Day-two: onboarding, sizing, quotas, and the two things that take this down |
 | `docs/CLUSTER.md` | Running this on more than one node: what breaks, distributed training, notes on serving inference |
+| `sites/cpt-gpu170/` | Site overlay and scripts for an 8 × H200 kubeadm/Rafay node with the GPU Operator — replaces scripts 01–04 and 07–08 there |
 
 ## Deploy
 
