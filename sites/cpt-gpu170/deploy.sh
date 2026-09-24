@@ -27,7 +27,8 @@ echo "==> pre-flight"
 fail=0
 need() { if eval "$2"; then echo "  ok    $1"; else echo "  FAIL  $1" >&2; fail=1; fi; }
 node=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
-alloc() { kubectl get node "$node" -o jsonpath="{.status.allocatable.nvidia\.com/$1}"; }
+# jq, not jsonpath: the dot in "mig-1g.35gb" would need escaping too.
+alloc() { kubectl get node "$node" -o json | jq -r --arg k "nvidia.com/$1" '.status.allocatable[$k] // empty'; }
 need "single node (local images, pullPolicy: Never)" \
      '[ "$(kubectl get nodes --no-headers | wc -l)" -eq 1 ]'
 need "nvidia.com/mig-1g.35gb advertised ($(alloc mig-1g.35gb))" '[ "$(alloc mig-1g.35gb)" -ge 1 ] 2>/dev/null'

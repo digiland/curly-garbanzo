@@ -9,7 +9,7 @@ chk() { printf '  %-44s %s\n' "$1" "$2"; [ "$3" = ok ] || fail=1; }
 
 node=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
 for r in mig-1g.35gb mig-2g.35gb; do
-    a=$(kubectl get node "$node" -o jsonpath="{.status.allocatable.nvidia\.com/$r}")
+    a=$(kubectl get node "$node" -o json | jq -r --arg k "nvidia.com/$r" '.status.allocatable[$k] // empty')
     chk "nvidia.com/$r allocatable" "${a:-0}" "$([ "${a:-0}" -ge 1 ] 2>/dev/null && echo ok || echo bad)"
 done
 
