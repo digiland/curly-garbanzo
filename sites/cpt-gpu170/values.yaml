@@ -34,10 +34,16 @@ hub:
       cookie_max_age_days: 1
       # Browsers only ever reach the hub over HTTPS (Cloudflare terminates TLS),
       # but the hub sees plain HTTP on its last hop and would otherwise issue
-      # cookies without the Secure flag.
-      cookie_options: {secure: true}
+      # cookies without the Secure flag. cookie_options is a tornado setting,
+      # not a JupyterHub trait: at the top level it is ignored with a warning.
       tornado_settings:
+        cookie_options: {secure: true}
         xsrf_cookie_kwargs: {secure: true}
+      # /hub/ shows the control panel even while the user's server runs.
+      # The default bounces straight back into JupyterLab, leaving no way to
+      # reach Home, Token or (for admins) Admin and Authorize without typing
+      # /hub/home.
+      redirect_to_server: false
     NativeAuthenticator:
       # Offers TOTP (authenticator app) at signup. NativeAuthenticator cannot
       # force it, so it is opt-in per user -- tell admins to turn it on.

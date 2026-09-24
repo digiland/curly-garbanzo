@@ -1,43 +1,146 @@
 {% extends "page.html" %}
-{# Overrides jupyterhub/templates/spawn_pending.html. A spinner instead of the
-   stock progress bar: KubeSpawner's percentages jump and stall, so a bar
-   suggested an ETA it could not keep. The script below drives
-   #progress-message, #progress-log and #progress-details. #}
+{# Overrides jupyterhub/templates/spawn_pending.html.
+
+   A checklist instead of the stock progress bar: KubeSpawner's percentages jump
+   and stall, so a bar suggested an ETA it could not keep. Each step is ticked
+   off by matching the Kubernetes events KubeSpawner streams from progress_url
+   ("Successfully assigned…", "Pulling image…", "Started container…"); unknown
+   events only go to the log, so a wording change in a future KubeSpawner
+   degrades to a spinner, never to a wrong tick. #}
+
+{% set profiles = {
+  "gpu-standard": ("GPU — Standard", "1 MIG slice (1g · 32 GB VRAM) · 4 CPU · 32 GB RAM"),
+  "gpu-large":    ("GPU — Large",    "1 MIG slice (2g · 32 GB VRAM) · 8 CPU · 64 GB RAM"),
+  "cpu":          ("CPU only",       "4 CPU · 16 GB RAM · no GPU"),
+} %}
+{% set slug = (spawner.user_options or {}).get("profile") if spawner else None %}
+{% set prof = profiles.get(slug) %}
 
 {% block title %}Starting… · ZAI Notebooks{% endblock %}
 
 {% block main %}
-<div class="z-page" style="max-width:40rem">
+<style>
+  .z-sp { max-width: 42rem; }
+  .z-sp-head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem; }
+  .z-sp-head h2 { margin: 0; font-size: 1.1rem; }
+  .z-sp-head p  { margin: .15rem 0 0; color: var(--z-muted); font-size: .9rem; }
+  .z-sp-clock { margin-left: auto; font-family: var(--z-mono); font-size: 1.05rem;
+                font-variant-numeric: tabular-nums; color: var(--z-muted); }
+
+  .z-spinner { flex: none; width: 32px; height: 32px; border-radius: 50%;
+               border: 3px solid var(--z-inset); border-top-color: var(--z-gold);
+               animation: z-spin .8s linear infinite; }
+  .z-spinner.is-done   { animation: none; border-color: var(--z-ok); }
+  .z-spinner.is-failed { animation: none; border-color: var(--z-bad); }
+  @keyframes z-spin { to { transform: rotate(360deg); } }
+
+  .z-steps { list-style: none; margin: 0 0 1.25rem; padding: 0; }
+  .z-steps li { display: flex; gap: .8rem; padding: .55rem 0; color: var(--z-muted);
+                border-top: 1px solid var(--z-line); }
+  .z-steps li:first-child { border-top: 0; }
+  .z-steps .dot { flex: none; width: 20px; height: 20px; margin-top: .1rem; border-radius: 50%;
+                  border: 2px solid var(--z-line-strong); display: grid; place-items: center;
+                  font-size: .7rem; line-height: 1; }
+  .z-steps .what { font-weight: 600; }
+  .z-steps .why  { font-size: .85rem; }
+  .z-steps li.is-active { color: var(--z-ink); }
+  .z-steps li.is-active .dot { border-color: var(--z-gold); border-top-color: transparent;
+                               animation: z-spin .9s linear infinite; }
+  .z-steps li.is-done { color: var(--z-ink); }
+  .z-steps li.is-done .dot { border-color: var(--z-ok); background: var(--z-ok); color: #fff; }
+  .z-steps li.is-done .dot::after { content: "✓"; }
+  .z-steps li.is-failed .dot { border-color: var(--z-bad); background: var(--z-bad); color: #fff; }
+  .z-steps li.is-failed .dot::after { content: "✕"; }
+
+  .z-sp-now { font-size: .85rem; margin: 0 0 1rem; padding: .6rem .8rem; border-radius: 8px;
+              background: var(--z-inset); font-family: var(--z-mono); word-break: break-word; }
+  .z-sp-note { display: none; margin: 0 0 1rem; padding: .8rem 1rem; border-radius: 8px; font-size: .9rem;
+               background: var(--z-warn-soft); color: var(--z-warn);
+               border: 1px solid color-mix(in srgb, var(--z-warn) 30%, transparent); }
+  .z-sp-note.is-bad { background: var(--z-bad-soft); color: var(--z-bad);
+                      border-color: color-mix(in srgb, var(--z-bad) 30%, transparent); }
+  .z-sp-note.is-shown { display: block; }
+  #progress-log { font-family: var(--z-mono); font-size: .8rem; max-height: 16rem; overflow: auto;
+                  margin-top: .5rem; color: var(--z-muted); }
+  #progress-log .t { color: var(--z-gold-deep); margin-right: .5rem; }
+  .z-sp-foot { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 1.25rem; }
+
+  /* page.html turns animations off for reduced motion; keep these, slowed, or
+     the page looks frozen. */
+  @media (prefers-reduced-motion: reduce) {
+    .z-spinner:not(.is-done):not(.is-failed),
+    .z-steps li.is-active .dot { animation: z-spin 2.4s linear infinite !important; }
+  }
+</style>
+
+<div class="z-page z-sp">
   <div class="z-page-head">
     <div>
       <div class="z-eyebrow">{{ user.name }}</div>
       <h1>Your server is starting</h1>
-      <p>You'll be taken to JupyterLab as soon as it's ready.</p>
+      <p>You'll be taken to JupyterLab automatically as soon as it's ready. You can leave this tab open.</p>
     </div>
   </div>
-  <style>
-    .z-spin-row { display: flex; align-items: center; gap: .9rem; }
-    .z-spin-row #progress-message { margin: 0; }
-    .z-spinner { flex: none; width: 28px; height: 28px; border-radius: 50%;
-                 border: 3px solid var(--z-inset); border-top-color: var(--z-gold);
-                 animation: z-spin .8s linear infinite; }
-    .z-spinner.is-failed { animation: none; border-color: var(--z-bad); }
-    @keyframes z-spin { to { transform: rotate(360deg); } }
-    /* page.html turns animations off for reduced motion; keep this one, slowed,
-       or the page looks frozen. */
-    @media (prefers-reduced-motion: reduce) {
-      .z-spinner:not(.is-failed) { animation: z-spin 2.4s linear infinite !important; }
-    }
-  </style>
+
   <div class="z-card">
-    <div class="z-spin-row" role="status" aria-live="polite">
+    <div class="z-sp-head" role="status" aria-live="polite">
       <div id="spinner" class="z-spinner" aria-hidden="true"></div>
-      <p id="progress-message">Requesting your server…</p>
+      <div>
+        <h2 id="sp-title">Request received…</h2>
+        {% if prof %}<p>{{ prof[0] }} · {{ prof[1] }}</p>{% endif %}
+      </div>
+      <div class="z-sp-clock" id="sp-clock" title="Time since you pressed Start">0:00</div>
     </div>
+
+    <ol class="z-steps" id="sp-steps">
+      <li class="is-active">
+        <span class="dot" aria-hidden="true"></span>
+        <div><div class="what">Request received</div>
+             <div class="why">The hub is creating your server.</div></div></li>
+      <li>
+        <span class="dot" aria-hidden="true"></span>
+        <div><div class="what">{% if slug == "cpu" %}Reserving CPU and memory{% else %}Reserving a GPU slice{% endif %}</div>
+             <div class="why">{% if slug == "cpu" %}Kubernetes finds room on the node.{% else %}Kubernetes assigns you a dedicated MIG slice. If every slice in this pool is taken, you'll be told here.{% endif %}</div></div></li>
+      <li>
+        <span class="dot" aria-hidden="true"></span>
+        <div><div class="what">Attaching your files</div>
+             <div class="why">Your home folder and the shared folders are connected. Your files carry over between sessions.</div></div></li>
+      <li>
+        <span class="dot" aria-hidden="true"></span>
+        <div><div class="what">Loading the software environment</div>
+             <div class="why">PyTorch, CUDA and caimex, already cached on this machine.</div></div></li>
+      <li>
+        <span class="dot" aria-hidden="true"></span>
+        <div><div class="what">Starting JupyterLab</div>
+             <div class="why">Your environment is set up and JupyterLab launches.</div></div></li>
+      <li>
+        <span class="dot" aria-hidden="true"></span>
+        <div><div class="what">Ready</div>
+             <div class="why">Opening JupyterLab.</div></div></li>
+    </ol>
+
+    <p class="z-sp-now" id="progress-message">Waiting for the first update…</p>
+
+    <div class="z-sp-note" id="sp-slow">
+      This is taking longer than usual. It's normally still fine: the event log below shows what
+      Kubernetes is doing. If nothing new appears for a few minutes, go back to the control panel,
+      stop the server and try again, or ask an administrator.
+    </div>
+    <div class="z-sp-note is-bad" id="sp-failed">
+      <strong>The server didn't start.</strong> The event log below says why. If it mentions a GPU,
+      "Insufficient" or "unschedulable", every slice in that pool is in use. Pick another option
+      (CPU only always has room), or ask an administrator to stop an idle server.
+    </div>
+
     <details id="progress-details">
       <summary>Event log</summary>
       <div id="progress-log"></div>
     </details>
+
+    <div class="z-sp-foot">
+      <a class="z-btn is-quiet is-sm" href="{{ base_url }}home">Back to control panel</a>
+      <a class="z-btn is-quiet is-sm" id="sp-retry" href="{{ base_url }}spawn/{{ user.escaped_name }}" style="display:none">Choose another option</a>
+    </div>
   </div>
 </div>
 {% endblock main %}
@@ -46,21 +149,72 @@
 {{ super() }}
 <script type="text/javascript">
   require(["jquery"], function ($) {
+    // Step indexes: 0 request, 1 schedule, 2 storage, 3 image, 4 start, 5 ready.
+    // First match wins; an event moves the checklist to the step it proves has
+    // begun. Anything unmatched is logged without moving it.
+    var RULES = [
+      [/Insufficient|unschedulable|didn't match|FailedScheduling|exceeded quota/i, "warn"],
+      [/Server requested|Spawning server/i,                                        1],
+      [/Successfully assigned|Scheduled/i,                                         2],
+      [/Attach|Mount|volume|persistentvolumeclaim/i,                               2],
+      [/Pulling image|Pulled|already present|Container image/i,                    3],
+      // "Container created/started" on Kubernetes 1.36; "Created container X" before.
+      [/Container (created|started)|(Created|Started) container/i,                 4],
+    ];
+    var started = Date.now(), current = 0, done = false;
+    var $steps = $("#sp-steps li"), $title = $("#sp-title"), $msg = $("#progress-message"),
+        $log = $("#progress-log"), $spin = $("#spinner"), $clock = $("#sp-clock");
+
+    function advanceTo(i) {
+      if (i <= current) return;
+      $steps.each(function (j) {
+        $(this).toggleClass("is-done", j < i).toggleClass("is-active", j === i);
+      });
+      current = i;
+      $title.text($steps.eq(i).find(".what").text() + "…");
+    }
+    function fmt(ms) {
+      var s = Math.floor(ms / 1000);
+      return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
+    }
+    var tick = setInterval(function () {
+      if (done) return;
+      var ms = Date.now() - started;
+      $clock.text(fmt(ms));
+      if (ms > 90 * 1000) $("#sp-slow").addClass("is-shown");
+    }, 1000);
+
     var evtSource = new EventSource("{{ progress_url }}");
-    var progressMessage = $("#progress-message"), spinner = $("#spinner"),
-        progressLog = $("#progress-log");
     evtSource.onmessage = function (e) {
       var evt = JSON.parse(e.data);
-      var html_message;
-      if (evt.html_message !== undefined) { progressMessage.html(evt.html_message); html_message = evt.html_message; }
-      else if (evt.message !== undefined) { progressMessage.text(evt.message); html_message = progressMessage.html(); }
-      if (html_message) progressLog.append($("<div>").addClass('progress-log-event').html(html_message));
-      if (evt.ready) { evtSource.close(); window.location.reload(); }
+      var text = evt.message || $("<div>").html(evt.html_message || "").text();
+      if (text) {
+        $msg.text(text);
+        $log.append($("<div>").addClass("progress-log-event")
+          .append($("<span>").addClass("t").text(fmt(Date.now() - started)))
+          .append(document.createTextNode(text)));
+        $log.scrollTop($log[0].scrollHeight);
+        for (var r = 0; r < RULES.length; r++) {
+          if (RULES[r][0].test(text)) {
+            if (RULES[r][1] === "warn") $("#sp-slow").addClass("is-shown");
+            else advanceTo(RULES[r][1]);
+            break;
+          }
+        }
+      }
+      if (evt.ready) {
+        done = true; evtSource.close();
+        $steps.removeClass("is-active").addClass("is-done");
+        $spin.addClass("is-done"); $title.text("Ready, opening JupyterLab…");
+        window.location.reload();
+      }
       if (evt.failed) {
-        evtSource.close();
-        spinner.addClass('is-failed');
-        $('#progress-details').prop('open', true);
-        progressMessage.after('<p class="z-alert is-bad">The server didn\'t start. The event log below says why; if it mentions a GPU or "insufficient", every slice in that pool is in use — try CPU-only or ask an administrator to stop an idle server.</p>');
+        done = true; evtSource.close(); clearInterval(tick);
+        $steps.eq(current).removeClass("is-active").addClass("is-failed");
+        $spin.addClass("is-failed"); $title.text("The server didn't start");
+        $("#sp-slow").removeClass("is-shown"); $("#sp-failed").addClass("is-shown");
+        $("#sp-retry").show();
+        $("#progress-details").prop("open", true);
       }
     };
     window._jupyterhub_page_loaded = true;
