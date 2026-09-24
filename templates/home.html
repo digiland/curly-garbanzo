@@ -22,15 +22,47 @@
         <a id="stop" role="button" class="z-btn is-danger">Stop server</a>
       </div>
     {% else %}
-      <p>Nothing running. Starting takes about fifteen seconds; you'll choose a size first.</p>
+      <p>Nothing running. Starting takes under a minute; you'll choose a size first.</p>
       <a id="start" role="button" class="z-btn" href="{{ url }}">Start server</a>
     {% endif %}
   </div>
-  <p class="z-empty">Servers stop on their own after 60 minutes idle. Your home directory (10 GB) is kept between sessions; <code>~/team</code> is shared with everyone.</p>
+  <div class="z-card" id="z-usage-card" style="margin-top:1rem;display:none">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:1rem">
+      <strong>GPU hours this month</strong>
+      <a href="{{ base_url }}usage" style="font-size:.85rem">Details</a>
+    </div>
+    <p id="z-usage-line" style="margin:.4rem 0 .5rem"></p>
+    <div class="z-progress" id="z-usage-bar" style="display:none"><div class="progress-bar" style="width:0%"></div></div>
+  </div>
+  <p class="z-empty">Servers stop on their own after 60 minutes idle, and time is counted while a server runs, so stop it when you're done. Your home directory (20 GB) is kept between sessions; <code>~/team</code> is shared with everyone.</p>
 </div>
 {% endblock main %}
 
 {% block script %}
 {{ super() }}
 <script type="text/javascript">require(["home"]);</script>
+<script type="text/javascript">
+  // "GPU hours this month" card. Hidden if the meter can't be reached: the
+  // control panel must never depend on it.
+  fetch("{{ base_url }}usage/me.json", {credentials: "same-origin"})
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!d || d.error) return;
+      var used = d.gpu_hours_used || 0, card = document.getElementById("z-usage-card");
+      var line = document.getElementById("z-usage-line");
+      if (d.budget === null || d.budget === undefined) {
+        line.textContent = used.toFixed(1) + " GPU hours used in " + d.month + ". No monthly limit.";
+      } else {
+        var frac = d.budget > 0 ? Math.min(used / d.budget, 1) : 1;
+        line.textContent = used.toFixed(1) + " of " + d.budget + " GPU hours used in " + d.month + "." +
+          (d.allowed ? "" : " Budget used up: GPU servers won't start until next month; CPU only still works.");
+        var bar = document.getElementById("z-usage-bar");
+        bar.style.display = "";
+        bar.firstElementChild.style.width = (frac * 100) + "%";
+        if (frac >= 1) bar.firstElementChild.classList.add("bg-danger");
+      }
+      card.style.display = "";
+    })
+    .catch(function () {});
+</script>
 {% endblock %}

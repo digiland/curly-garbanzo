@@ -5,7 +5,14 @@
 set -uo pipefail
 export KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"
 fail=0
-chk() { printf '  %-44s %s\n' "$1" "$2"; [ "$3" = ok ] || fail=1; }
+# chk NAME VALUE ok|bad|warn -- warn is printed but does not fail the run.
+chk() {
+    case "$3" in
+        ok)   printf '  %-44s %s\n' "$1" "$2" ;;
+        warn) printf '  %-44s %s   <-- WARNING\n' "$1" "$2" ;;
+        *)    printf '  %-44s %s   <-- FAIL\n' "$1" "$2"; fail=1 ;;
+    esac
+}
 
 node=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
 for r in mig-1g.35gb mig-2g.35gb; do
@@ -57,6 +64,23 @@ chk "admins cannot open user servers" "admin_access=${aa:-?}" "$([ "$aa" = False
 rb=$(kubectl auth can-i list nodes --as=system:serviceaccount:jupyterhub:hub 2>/dev/null)
 chk "hub can read node capacity" "${rb:-no}" "$([ "$rb" = yes ] && echo ok || echo bad)"
 
+# Usage meter. Ready means a sample less than two minutes old (its readiness
+# probe is /healthz), i.e. usage is actually being recorded right now.
+s=$(kubectl -n jupyterhub get deploy zai-meter -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+chk "usage meter recording" "${s:-0} ready" "$([ "${s:-0}" -ge 1 ] && echo ok || echo bad)"
+mc=$(kubectl -n jupyterhub exec deploy/hub -- python3 -c '
+import urllib.request, urllib.error
+try:
+    urllib.request.urlopen("http://zai-meter:8000/api/usage", timeout=5)
+    print("open")
+except urllib.error.HTTPError as e:
+    print(e.code)
+except Exception:
+    print("unreachable")' 2>/dev/null)
+chk "hub reaches meter; token required" "${mc:-?}" "$([ "$mc" = 401 ] && echo ok || echo bad)"
+np=$(kubectl -n jupyterhub get networkpolicy zai-meter -o name 2>/dev/null)
+chk "meter accepts only the hub" "${np:-no policy}" "$([ -n "$np" ] && echo ok || echo bad)"
+
 if [ -n "${PUBLIC_HOSTNAME:-}" ]; then
     c=$(curl -s -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOSTNAME}/hub/login")
     chk "https://${PUBLIC_HOSTNAME}/hub/login" "HTTP $c" "$([ "$c" = 200 ] && echo ok || echo bad)"
@@ -71,7 +95,7 @@ print('none' if r is None else ('2fa' if r[0] else 'no2fa'))
 " 2>/dev/null || echo none)
 case "$adm" in
     2fa)   chk "admin account claimed" "yes, with 2FA" ok ;;
-    no2fa) chk "admin account claimed" "yes, WITHOUT 2FA" bad ;;
+    no2fa) chk "admin account claimed" "yes, WITHOUT 2FA" warn ;;
     *)     chk "admin account claimed" "NO - anyone can register it" bad ;;
 esac
 

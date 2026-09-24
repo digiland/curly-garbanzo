@@ -23,6 +23,12 @@
 # profile list and the volume lists are restated in full here.
 
 hub:
+  # Merged with the base file's extraEnv map (maps merge; lists would not).
+  extraEnv:
+    METER_URL: http://zai-meter:8000
+    METER_TOKEN:
+      valueFrom:
+        secretKeyRef: {name: zai-meter, key: token}
   config:
     JupyterHub:
       # Admins can stop, start and approve users, but NOT open a user's running
@@ -131,6 +137,204 @@ hub:
       c.KubeSpawner.profile_list = _profile_list
       c.KubeSpawner.pre_spawn_hook = _refuse_full_pool
 
+    # Usage pages and GPU budgets. The numbers live in zai-meter
+    # (sites/cpt-gpu170/meter/meter.py, the only writer); everything here is a
+    # view over its API plus one check before a GPU server starts.
+    #
+    #   /hub/usage              a user's own month; admins get every user,
+    #                           meter health, budgets and adjustments
+    #   /hub/usage?user=NAME    admins: one user's detail
+    #   /hub/usage/me.json      the control panel's "GPU hours this month" card
+    #   /hub/usage/export.csv   admins: statement lines for billing
+    #
+    # Registered through the authenticator's get_handlers (as NativeAuthenticator
+    # registers /authorize), not the deprecated JupyterHub.extra_handlers.
+    04-usage: |
+      import json, os, re, urllib.parse
+      from tornado import web
+      from tornado.httpclient import AsyncHTTPClient, HTTPRequest
+      from jupyterhub import orm
+      from jupyterhub.handlers import BaseHandler
+      from nativeauthenticator import NativeAuthenticator
+
+      _METER_URL = os.environ.get("METER_URL", "http://zai-meter:8000")
+      _METER_TOKEN = os.environ.get("METER_TOKEN", "")
+      # If the meter is down, GPU spawns go ahead (and are backfilled once it is
+      # back, see meter.py) rather than locking everyone out of the GPUs.
+      _BUDGET_FAIL_OPEN = os.environ.get("METER_FAIL_OPEN", "true").lower() == "true"
+      _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+      _USER_RE = re.compile(r"^(\*|[a-z][a-z0-9-]{2,30})$")
+
+      async def _meter(path, body=None, raw=False, timeout=10):
+          req = HTTPRequest(
+              _METER_URL + path, method="POST" if body is not None else "GET",
+              headers={"Authorization": f"Bearer {_METER_TOKEN}",
+                       "Content-Type": "application/json"},
+              body=json.dumps(body) if body is not None else None,
+              connect_timeout=5, request_timeout=timeout)
+          resp = await AsyncHTTPClient().fetch(req, raise_error=False)
+          if resp.code == 599 or resp.body is None:
+              raise RuntimeError(f"usage meter unreachable ({resp.error})")
+          if resp.code >= 400:
+              try:
+                  msg = json.loads(resp.body)["error"]
+              except Exception:
+                  msg = f"usage meter returned HTTP {resp.code}"
+              raise RuntimeError(msg)
+          return resp.body if raw else json.loads(resp.body)
+
+      class _UsageBase(BaseHandler):
+          def _month(self, name="month", body=False):
+              get = self.get_body_argument if body else self.get_argument
+              m = get(name, "")
+              return m if _MONTH_RE.match(m) else ""
+
+          def _require_admin(self):
+              if not self.current_user.admin:
+                  raise web.HTTPError(403)
+
+          def _back(self, msg):
+              """Redirect target after a form post. Built from validated
+              fields only, so it can never point off-site."""
+              q = {"msg": msg[:300]}
+              m, u = self._month("back_month", body=True), self.get_body_argument("back_user", "")
+              if m:
+                  q["month"] = m
+              if u and u != "*" and _USER_RE.match(u):
+                  q["user"] = u
+              return f"{self.hub.base_url}usage?{urllib.parse.urlencode(q)}"
+
+      class UsagePage(_UsageBase):
+          @web.authenticated
+          async def get(self):
+              me = self.current_user
+              month, target = self._month(), self.get_argument("user", "")
+              if target and (target == "*" or not _USER_RE.match(target)):
+                  raise web.HTTPError(400)
+              if target and target != me.name:
+                  self._require_admin()
+              view = "overview" if (me.admin and not target) else "detail"
+              name = target or me.name
+              q = f"?month={month}" if month else ""
+              data, error = None, None
+              try:
+                  path = "/api/usage" if view == "overview" else f"/api/usage/{name}"
+                  data = await _meter(path + q)
+              except Exception as e:
+                  self.log.error("usage page: %s", e)
+                  error = str(e)
+              users = ([u.name for u in self.db.query(orm.User).order_by(orm.User.name)]
+                       if me.admin else [])
+              html = await self.render_template(
+                  "usage.html", view=view, data=data, error=error, target=name,
+                  flash=self.get_argument("msg", ""), all_users=users)
+              self.finish(html)
+
+      class UsageMe(_UsageBase):
+          @web.authenticated
+          async def get(self):
+              try:
+                  d = await _meter(f"/api/check/{self.current_user.name}", timeout=5)
+              except Exception:
+                  d = {"error": "unavailable"}
+              self.set_header("Content-Type", "application/json")
+              self.set_header("Cache-Control", "no-store")
+              self.finish(json.dumps(d))
+
+      class UsageExport(_UsageBase):
+          @web.authenticated
+          async def get(self):
+              self._require_admin()
+              month = self._month()
+              body = await _meter("/api/export.csv" + (f"?month={month}" if month else ""), raw=True)
+              self.set_header("Content-Type", "text/csv; charset=utf-8")
+              self.set_header("Content-Disposition",
+                              f'attachment; filename="zai-usage-{month or "this-month"}.csv"')
+              self.set_header("Cache-Control", "no-store")
+              self.finish(body)
+
+      class UsageBudget(_UsageBase):
+          @web.authenticated
+          async def post(self):
+              self._require_admin()
+              user = self.get_body_argument("user", "").strip()
+              hours = self.get_body_argument("gpu_hours", "").strip()
+              try:
+                  await _meter("/api/budget", {
+                      "user": user, "gpu_hours": float(hours) if hours else None,
+                      "by": self.current_user.name,
+                      "note": self.get_body_argument("note", "")})
+                  who = "everyone (default)" if user == "*" else user
+                  msg = f"Budget for {who} set to {hours + ' GPU hours' if hours else 'unlimited'}."
+              except Exception as e:
+                  msg = f"Budget not saved: {e}"
+              self.redirect(self._back(msg))
+
+      class UsageAdjust(_UsageBase):
+          @web.authenticated
+          async def post(self):
+              self._require_admin()
+              try:
+                  await _meter("/api/adjustments", {
+                      "user": self.get_body_argument("user", "").strip(),
+                      "month": self._month(body=True),
+                      "resource": self.get_body_argument("resource", ""),
+                      "hours": float(self.get_body_argument("hours", "0") or 0),
+                      "reason": self.get_body_argument("reason", ""),
+                      "by": self.current_user.name})
+                  msg = "Adjustment recorded."
+              except Exception as e:
+                  msg = f"Adjustment not saved: {e}"
+              self.redirect(self._back(msg))
+
+      _usage_handlers = [
+          (r"/usage", UsagePage),
+          (r"/usage/me\.json", UsageMe),
+          (r"/usage/export\.csv", UsageExport),
+          (r"/usage/budget", UsageBudget),
+          (r"/usage/adjust", UsageAdjust),
+      ]
+      _na_get_handlers = NativeAuthenticator.get_handlers
+
+      def _get_handlers(self, app):
+          return list(_na_get_handlers(self, app)) + _usage_handlers
+
+      NativeAuthenticator.get_handlers = _get_handlers
+
+      # Budget check, after the full-pool check in 03-gpu-capacity. CPU-only
+      # servers are never refused: running out of GPU hours must not lock a
+      # user out of their files.
+      async def _check_gpu_budget(spawner):
+          slug = (spawner.user_options or {}).get("profile")
+          prof = next((p for p in _STATIC_PROFILES if p.get("slug") == slug), None)
+          if not prof or not _mig_resource(prof):
+              return
+          try:
+              d = await _meter(f"/api/check/{spawner.user.name}", timeout=5)
+          except Exception as e:
+              if _BUDGET_FAIL_OPEN:
+                  spawner.log.warning("GPU budget check unavailable, allowing %s: %s",
+                                      spawner.user.name, e)
+                  return
+              raise RuntimeError(
+                  "GPU budgets can't be checked right now, so GPU servers can't start. "
+                  "CPU only still works; try again in a few minutes.")
+          if not d.get("allowed", True):
+              raise RuntimeError(
+                  f"You've used {d['gpu_hours_used']:.1f} of your {d['budget']:g} GPU hours "
+                  f"for {d['month']}. CPU only is still available; ask an administrator "
+                  "if you need more GPU time.")
+
+      _pre_spawn_before_budget = (c.KubeSpawner["pre_spawn_hook"]
+                                  if "pre_spawn_hook" in c.KubeSpawner else None)
+
+      async def _pre_spawn_with_budget(spawner):
+          if _pre_spawn_before_budget:
+              await _pre_spawn_before_budget(spawner)
+          await _check_gpu_budget(spawner)
+
+      c.KubeSpawner.pre_spawn_hook = _pre_spawn_with_budget
+
 singleuser:
   # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
   # metadata server, but this node's own address is 100.70.88.4 -- carrier-grade
@@ -212,6 +416,7 @@ singleuser:
         mem_guarantee: "2G"
         extra_pod_config: {runtimeClassName: nvidia}
         extra_resource_limits: {nvidia.com/mig-1g.35gb: "1"}
+        extra_labels: {zai/profile: gpu-standard}   # read by the usage meter
     - display_name: "GPU — Large"
       slug: gpu-large   # stable id: display_name gains a live "N free" suffix
       description: "1 MIG slice (2g, 32 GB VRAM, 32 SMs — twice the compute), 64 GB RAM, 8 CPU."
@@ -222,6 +427,7 @@ singleuser:
         mem_guarantee: "4G"
         extra_pod_config: {runtimeClassName: nvidia}
         extra_resource_limits: {nvidia.com/mig-2g.35gb: "1"}
+        extra_labels: {zai/profile: gpu-large}
     - display_name: "CPU only — no GPU"
       slug: cpu   # stable id: display_name gains a live "N free" suffix
       description: "16 GB RAM, 4 CPU, no GPU. Leaves a MIG slice free for someone who needs it."
@@ -231,3 +437,4 @@ singleuser:
         mem_limit: "16G"
         mem_guarantee: "1G"
         extra_resource_limits: {}
+        extra_labels: {zai/profile: cpu}

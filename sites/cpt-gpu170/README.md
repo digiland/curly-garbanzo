@@ -94,6 +94,67 @@ with a clear message, instead of a 10-minute spinner and a timeout
 namespaces take slices, the scheduler is still the final word, and
 `gpu-usage.sh` shows the full picture.
 
+## Usage, budgets and billing
+
+`zai-meter` (`meter/meter.py`, deployed by `meter.yaml`) records who held what,
+minute by minute. Users see their own month at **`/hub/usage`** and a "GPU hours
+this month" card on the control panel. Admins see every user, the meter's
+health, budgets and adjustments, and can download a CSV statement.
+
+**What is counted.** Every 20 s the meter lists running user servers and
+records one row per server per minute: user, profile, MIG slice type, CPU and
+memory limits, and how busy the slice was (DCGM). Pending servers (queued for a
+full pool) are not counted. Hours are the time a server *held* its resources,
+busy or not, because nobody else could use them. "GPU busy" and "idle GPU hours"
+are reported next to them, to show who holds a slice without using it.
+
+| Line item | Unit |
+|---|---|
+| `gpu:mig-1g.35gb` (GPU Standard) | slice-hours |
+| `gpu:mig-2g.35gb` (GPU Large) | slice-hours |
+| `cpu` | core-hours (the server's limit) |
+| `mem_gb` | GB-hours (the server's limit) |
+
+**Why it can be trusted.**
+- It samples what is running, not start and stop events, so a hub restart, a
+  crashed pod or a missed event can't produce a session that never ends. A
+  minute is stored once per server (keyed by pod and minute), so repeating a
+  sample changes nothing.
+- The meter is the only writer. It runs as one replica with the Recreate
+  strategy, on SQLite on its own WEKA volume, in rollback-journal mode (WAL is
+  unsafe on network filesystems).
+- A heartbeat is written for every minute the meter was looking, so gaps are
+  visible on the admin page. After a gap, servers that were running across it
+  (same pod, started before the gap) are filled in and flagged; a server that
+  started and stopped entirely inside a gap is not guessed at.
+- Budgets and adjustments are append-only. The latest budget wins, and a
+  correction is a new adjustment (negative hours = credit), never an edit.
+- A consistent copy is written daily to `/data/backups` and kept for 35 days.
+- `meter/test_meter.py` covers counting, re-recording, outages and backfill,
+  month boundaries in the configured time zone, pricing, budgets and the API's
+  authentication: `cd sites/cpt-gpu170/meter && python3 -m unittest -v test_meter`.
+- Only the hub can reach it (NetworkPolicy plus a bearer token in secret
+  `zai-meter`), and `verify.sh` checks that it is recording.
+
+**Prices and budgets.** Both are in `meter/config.json`: currency, time zone
+(months follow Africa/Harare), rate cards by month (a new card never re-prices
+past months), the default GPU budget, and the idle threshold. Redeploy, or
+re-apply the `zai-meter-config` ConfigMap; the meter re-reads it within about a
+minute, without a restart. With every rate at 0, statements show hours and no
+charges. Admins can also set a budget per user, or everyone's default, on
+`/hub/usage`; those settings take precedence over the file.
+
+**When a budget runs out,** GPU servers are refused at start with the reason,
+and CPU only still works. A running server is not stopped. If the meter is down,
+GPU starts are allowed (`METER_FAIL_OPEN`, default true) and the time is filled
+in when it returns.
+
+**Getting at the raw data:**
+```bash
+sudo kubectl -n jupyterhub exec deploy/zai-meter -- python3 -c \
+  "import sqlite3; print(sqlite3.connect('/data/meter.sqlite').execute('select count(*) from samples').fetchone())"
+```
+
 ## Authentication and isolation
 
 ### Login
@@ -151,14 +212,15 @@ whole GPUs) and wait for `nvidia.com/mig.config.state=success`. The profiles in
 `values.yaml` must then be updated to match the new resource names. Rafay may
 manage that label, so coordinate with whoever owns the cluster.
 
+## Verified on the live cluster (24 Sep 2026)
+
+Deployed and working: image build (BuildKit reached quay.io, PyPI and the
+caimex installer), the hub behind the Cloudflare tunnel, admin claimed by
+`claim-admin.sh`, a GPU notebook spawned with capabilities dropped under the
+baseline Pod Security level, and the usage meter recording.
+
 ## Not verified yet
 
-Written and checked against the live cluster's configuration. The chart
-renders with this overlay, and `gpu-usage.sh` has run against the live cluster.
-**Nothing has been deployed**, so these are still unproven:
-
-- whether the BuildKit pod can reach the caimex installer and PyPI
-- the spawn-page capacity hook and the full-pool refusal message
-- `claim-admin.sh` writing to a real hub database, and 2FA login with its key
-- that notebooks start with all capabilities dropped (the docker-stacks
-  start script is not expected to need any)
+- the full-pool refusal message (needs a pool to actually fill)
+- a budget refusal, and the meter's GPU-busy figures, with real users
+- behaviour past one node (see `docs/CLUSTER.md`)

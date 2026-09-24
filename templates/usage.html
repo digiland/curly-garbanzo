@@ -1,0 +1,334 @@
+{% extends "page.html" %}
+{# /hub/usage -- rendered by the 04-usage handlers in sites/cpt-gpu170/values.yaml
+   from zai-meter's API. view = "overview" (admins, every user) or "detail"
+   (one user: yourself, or anyone for an admin). #}
+
+{% macro hours(v, digits=1) -%}{{ ("%." ~ digits ~ "f")|format(v or 0) }}{%- endmacro %}
+{% macro money(v) -%}{{ "%.2f"|format(v or 0) }}{%- endmacro %}
+{% macro pct(v) -%}{% if v is none %}—{% else %}{{ "%.0f"|format(v * 100) }}%{% endif %}{%- endmacro %}
+{% macro when(iso) -%}{{ iso[:10] }} {{ iso[11:16] }}{%- endmacro %}
+{% macro budget_bar(used, budget) -%}
+  {% if budget is none %}
+    <span class="z-muted">no limit</span>
+  {% else %}
+    {% set frac = (used / budget) if budget > 0 else 1 %}
+    <div class="z-ubar {% if frac >= 1 %}is-over{% elif frac >= 0.8 %}is-near{% endif %}"
+         role="meter" aria-valuemin="0" aria-valuemax="{{ budget }}" aria-valuenow="{{ used }}">
+      <span style="width:{{ [frac * 100, 100]|min }}%"></span>
+    </div>
+    <span class="z-ubar-label">{{ hours(used) }} / {{ "%g"|format(budget) }} h</span>
+  {% endif %}
+{%- endmacro %}
+
+{% block title %}Usage · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<style>
+  .z-u { max-width: 72rem; }
+  .z-u .z-card + .z-card { margin-top: 1rem; }
+  .z-u h2 { font-size: 1rem; margin: 0 0 .75rem; }
+  .z-u-top { display: flex; gap: 1rem; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; }
+  .z-u-top form { display: flex; gap: .5rem; align-items: center; }
+  .z-u select, .z-u input[type=text], .z-u input[type=number] {
+    font: inherit; font-size: .9rem; padding: .45rem .6rem; border-radius: 8px;
+    border: 1px solid var(--z-line-strong); background: var(--z-surface); color: var(--z-ink); }
+  .z-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 1rem; margin: 1rem 0; }
+  .z-kpi { background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); padding: 1rem; }
+  .z-kpi .v { font-family: var(--z-display); font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .z-kpi .l { color: var(--z-muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
+  .z-kpi .s { color: var(--z-muted); font-size: .8rem; margin-top: .25rem; }
+  .z-u .z-table td.n, .z-u .z-table th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .z-u .z-table-wrap { overflow-x: auto; }
+  .z-muted { color: var(--z-muted); }
+  .z-ubar { display: inline-block; width: 6rem; height: 6px; border-radius: 999px; background: var(--z-inset);
+            vertical-align: middle; overflow: hidden; }
+  .z-ubar span { display: block; height: 100%; background: var(--z-ok); }
+  .z-ubar.is-near span { background: var(--z-warn); }
+  .z-ubar.is-over span { background: var(--z-bad); }
+  .z-ubar-label { font-size: .8rem; margin-left: .4rem; font-variant-numeric: tabular-nums; }
+  .z-ubar.is-big { width: 100%; height: 10px; }
+  .z-days { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(10px, 1fr); gap: 3px;
+            align-items: end; height: 7rem; padding-top: .5rem; }
+  .z-days div { background: var(--z-gold); border-radius: 3px 3px 0 0; min-height: 2px; }
+  .z-days div.is-cpu { background: var(--z-line-strong); }
+  .z-days-axis { display: flex; justify-content: space-between; color: var(--z-muted); font-size: .75rem; margin-top: .25rem; }
+  .z-u-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+  .z-u-forms form { display: grid; gap: .6rem; }
+  .z-u-forms label { font-size: .8rem; color: var(--z-muted); display: grid; gap: .25rem; }
+  .z-u-note { font-size: .85rem; color: var(--z-muted); margin: .5rem 0 0; }
+  .z-u .z-alert + .z-alert { margin-top: .5rem; }
+  .z-u .z-alert { margin-bottom: 1rem; }
+  details.z-u-gaps summary { cursor: pointer; }
+</style>
+
+<div class="z-page z-u">
+  <div class="z-u-top">
+    <div class="z-page-head" style="margin:0">
+      <div>
+        <div class="z-eyebrow">{% if view == "overview" %}Administration{% else %}{{ target }}{% endif %}</div>
+        <h1>Usage{% if data %} · {{ data.month }}{% endif %}</h1>
+        {% if data %}<p class="z-muted" style="margin:0">Times in {{ data.timezone }}. Updated every minute.</p>{% endif %}
+      </div>
+    </div>
+    {% if data and data.months %}
+    <form method="get" action="{{ base_url }}usage">
+      {% if view == "detail" and user.admin and target != user.name %}<input type="hidden" name="user" value="{{ target }}">{% endif %}
+      <label class="visually-hidden" for="month">Month</label>
+      <select id="month" name="month" onchange="this.form.submit()">
+        {% for m in data.months %}<option value="{{ m }}" {% if m == data.month %}selected{% endif %}>{{ m }}</option>{% endfor %}
+      </select>
+      <noscript><button class="z-btn is-quiet is-sm">Show</button></noscript>
+      {% if view == "overview" %}
+        <a class="z-btn is-sm" href="{{ base_url }}usage/export.csv?month={{ data.month }}">Download CSV</a>
+      {% endif %}
+    </form>
+    {% endif %}
+  </div>
+
+  {% if flash %}<p class="z-alert {% if 'not saved' in flash %}is-bad{% else %}is-ok{% endif %}" style="margin-top:1rem">{{ flash }}</p>{% endif %}
+  {% if error %}
+    <p class="z-alert is-bad" style="margin-top:1rem">Usage figures are unavailable right now ({{ error }}). Metering itself keeps running if only this page is affected; try again in a minute.</p>
+  {% endif %}
+
+{% if data and view == "overview" %}
+  {# ------------------------------------------------------------ overview #}
+  {% set m = data.meter %}
+  {% set active = data.users|selectattr("running")|list %}
+  <div class="z-kpis">
+    <div class="z-kpi"><div class="l">GPU hours</div><div class="v">{{ hours(data.totals.gpu_hours) }}</div>
+      <div class="s">slice-hours, all users</div></div>
+    <div class="z-kpi"><div class="l">Users</div><div class="v">{{ data.users|length }}</div>
+      <div class="s">{{ active|length }} running now</div></div>
+    <div class="z-kpi"><div class="l">Idle GPU hours</div>
+      <div class="v">{{ hours(data.users|sum(attribute="idle_gpu_hours")) }}</div>
+      <div class="s">slice held, under {{ pct(0.05) }} busy</div></div>
+    {% if data.priced %}
+    <div class="z-kpi"><div class="l">Charges</div><div class="v">{{ money(data.totals.cost) }}</div>
+      <div class="s">{{ data.currency }}, before tax</div></div>
+    {% endif %}
+  </div>
+
+  <div class="z-card">
+    <h2>Meter</h2>
+    {% if m.last_sample_age_s is none %}
+      <p class="z-alert is-bad">No samples yet. The meter may still be starting.</p>
+    {% elif m.last_sample_age_s > 180 %}
+      <p class="z-alert is-bad">Last sample {{ (m.last_sample_age_s / 60)|round|int }} minutes ago. The meter is not recording; check <code>kubectl -n jupyterhub logs deploy/zai-meter</code>.</p>
+    {% else %}
+      <p style="margin:0"><span class="z-pill is-ok">recording</span>
+        <span class="z-muted">since {{ when(m.metering_since) }} · last sample under a minute ago</span></p>
+    {% endif %}
+    <p class="z-u-note">
+      Gaps this month: <strong>{{ m.gap_minutes }}</strong> min ·
+      filled in afterwards: <strong>{{ m.backfilled_minutes }}</strong> min ·
+      GPU activity unavailable: <strong>{{ m.gpu_metrics_missing_minutes }}</strong> min.
+      A gap is time the meter wasn't looking. Servers that were running across it are filled in;
+      a server that started and stopped entirely inside a gap is not counted.
+    </p>
+    {% if m.gaps %}
+    <details class="z-u-gaps"><summary class="z-u-note">{{ m.gaps|length }} gap{{ "s" if m.gaps|length != 1 }}</summary>
+      <ul class="z-u-note">{% for g in m.gaps %}<li>{{ when(g.from) }} → {{ when(g.to) }} ({{ g.minutes }} min)</li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+  </div>
+
+  <div class="z-card">
+    <h2>By user</h2>
+    {% if not data.users %}
+      <p class="z-muted" style="margin:0">Nobody has run a server this month.</p>
+    {% else %}
+    <div class="z-table-wrap">
+    <table class="z-table">
+      <thead><tr>
+        <th>User</th>
+        <th class="n">{{ data.resources["gpu:mig-1g.35gb"] }}</th>
+        <th class="n">{{ data.resources["gpu:mig-2g.35gb"] }}</th>
+        <th class="n">CPU core-h</th>
+        <th class="n">Memory GB-h</th>
+        <th class="n">GPU busy</th>
+        <th class="n">Idle GPU h</th>
+        <th>GPU budget</th>
+        {% if data.priced %}<th class="n">Charges</th>{% endif %}
+      </tr></thead>
+      <tbody>
+      {% for e in data.users %}
+        {% set it = e["items"] %}
+        <tr>
+          <td><a href="{{ base_url }}usage?user={{ e.user }}&month={{ data.month }}">{{ e.user }}</a>
+              {% if e.running %}<span class="z-pill is-ok">running</span>{% endif %}
+              {% if e.adjustments %}<span class="z-pill is-gold" title="Includes adjustments">adj</span>{% endif %}</td>
+          <td class="n">{{ hours(it.get("gpu:mig-1g.35gb", {}).get("hours")) }}</td>
+          <td class="n">{{ hours(it.get("gpu:mig-2g.35gb", {}).get("hours")) }}</td>
+          <td class="n">{{ hours(it.get("cpu", {}).get("hours")) }}</td>
+          <td class="n">{{ hours(it.get("mem_gb", {}).get("hours"), 0) }}</td>
+          <td class="n">{{ pct(e.gpu_busy_avg) }}</td>
+          <td class="n">{{ hours(e.idle_gpu_hours) }}</td>
+          <td>{{ budget_bar(e.gpu_hours, e.budget) }}</td>
+          {% if data.priced %}<td class="n">{{ money(e.cost) }}</td>{% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+      <tfoot><tr>
+        <th>Total</th>
+        <th class="n">{{ hours(data.totals["items"].get("gpu:mig-1g.35gb", {}).get("hours")) }}</th>
+        <th class="n">{{ hours(data.totals["items"].get("gpu:mig-2g.35gb", {}).get("hours")) }}</th>
+        <th class="n">{{ hours(data.totals["items"].get("cpu", {}).get("hours")) }}</th>
+        <th class="n">{{ hours(data.totals["items"].get("mem_gb", {}).get("hours"), 0) }}</th>
+        <th></th><th></th><th></th>
+        {% if data.priced %}<th class="n">{{ money(data.totals.cost) }}</th>{% endif %}
+      </tr></tfoot>
+    </table>
+    </div>
+    {% endif %}
+    <p class="z-u-note">
+      Hours count the time a server held its resources, whether or not it was busy: nobody else could use them.
+      CPU and memory are the server's limits. "GPU busy" is the slice's average compute activity while held.
+      {% if data.priced %}Prices: {% for k, v in data.rates.items() %}{{ data.resources.get(k, k) }} {{ money(v) }}/h{{ ", " if not loop.last }}{% endfor %} ({{ data.currency }}).
+      {% else %}No prices are set, so no charges are shown.{% endif %}
+      Prices and the default budget live in <code>sites/cpt-gpu170/meter/config.json</code>.
+    </p>
+  </div>
+
+  <div class="z-card">
+    <h2>Budgets and adjustments</h2>
+    <datalist id="z-users">{% for u in all_users %}<option value="{{ u }}">{% endfor %}</datalist>
+    <div class="z-u-forms">
+      <form method="post" action="{{ base_url }}usage/budget">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="back_month" value="{{ data.month }}">
+        <strong>GPU budget</strong>
+        <label>User, or <code>*</code> for everyone's default
+          <input type="text" name="user" list="z-users" required pattern="\*|[a-z][a-z0-9\-]{2,30}" placeholder="*"></label>
+        <label>GPU hours per month (blank = no limit)
+          <input type="number" name="gpu_hours" min="0" step="0.5" placeholder="no limit"></label>
+        <label>Note (optional)
+          <input type="text" name="note" maxlength="200"></label>
+        <button class="z-btn is-sm">Save budget</button>
+        <p class="z-u-note" style="margin:0">Current default: {% if data.default_budget is none %}no limit{% else %}{{ "%g"|format(data.default_budget) }} h{% endif %}.
+          When a user reaches their budget, GPU servers are refused at start; CPU only still works. A server that is already running is not stopped.</p>
+      </form>
+      <form method="post" action="{{ base_url }}usage/adjust">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="back_month" value="{{ data.month }}">
+        <input type="hidden" name="month" value="{{ data.month }}">
+        <strong>Adjustment for {{ data.month }}</strong>
+        <label>User
+          <input type="text" name="user" list="z-users" required pattern="[a-z][a-z0-9\-]{2,30}"></label>
+        <label>Resource
+          <select name="resource">{% for k, v in data.resources.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></label>
+        <label>Hours (negative for a credit)
+          <input type="number" name="hours" step="0.01" required></label>
+        <label>Reason
+          <input type="text" name="reason" maxlength="200" required placeholder="e.g. credit for 24 Sep outage"></label>
+        <button class="z-btn is-sm is-quiet">Record adjustment</button>
+        <p class="z-u-note" style="margin:0">Adjustments are permanent entries, never edits. To undo one, record the opposite.</p>
+      </form>
+    </div>
+  </div>
+
+{% elif data and view == "detail" %}
+  {# -------------------------------------------------------------- detail #}
+  {% set e = data.user %}
+  {% set it = e["items"] if e else {} %}
+  {% if view == "detail" and user.admin and target != user.name %}
+    <p style="margin:.75rem 0 0"><a href="{{ base_url }}usage?month={{ data.month }}">← All users</a></p>
+  {% endif %}
+  <div class="z-kpis">
+    <div class="z-kpi"><div class="l">GPU hours</div><div class="v">{{ hours(e.gpu_hours if e else 0) }}</div>
+      <div class="s">{% if data.budget is none %}no monthly limit{% else %}of {{ "%g"|format(data.budget) }} this month{% endif %}</div>
+      {% if data.budget is not none %}<div style="margin-top:.5rem">{{ budget_bar(e.gpu_hours if e else 0, data.budget) }}</div>{% endif %}</div>
+    <div class="z-kpi"><div class="l">CPU core-hours</div><div class="v">{{ hours(it.get("cpu", {}).get("hours")) }}</div>
+      <div class="s">{{ e.sessions if e else 0 }} session{{ "s" if not e or e.sessions != 1 }}</div></div>
+    <div class="z-kpi"><div class="l">GPU busy</div><div class="v">{{ pct(e.gpu_busy_avg if e else none) }}</div>
+      <div class="s">average while holding a slice</div></div>
+    {% if data.priced %}
+    <div class="z-kpi"><div class="l">Charges</div><div class="v">{{ money(e.cost if e else 0) }}</div>
+      <div class="s">{{ data.currency }}</div></div>
+    {% endif %}
+  </div>
+
+  {% if data.budget is not none and e and e.gpu_hours >= data.budget %}
+    <p class="z-alert is-bad">This month's GPU budget is used up. New GPU servers won't start until next month; CPU only still works.</p>
+  {% elif data.budget is not none and e and e.gpu_hours >= 0.8 * data.budget %}
+    <p class="z-alert" style="background:var(--z-warn-soft);color:var(--z-warn)">You've used over 80% of this month's GPU budget.</p>
+  {% endif %}
+
+  <div class="z-card">
+    <h2>By day</h2>
+    {% if data.daily %}
+      {% set peak = [data.daily|map(attribute="hours")|max, 0.01]|max %}
+      <div class="z-days" aria-label="Hours per day">
+        {% for d in data.daily %}
+          <div class="{% if d.gpu_hours == 0 %}is-cpu{% endif %}" style="height:{{ (d.hours / peak * 100)|round(1) }}%"
+               title="{{ d.date }}: {{ hours(d.hours) }} h server time, {{ hours(d.gpu_hours) }} GPU h"></div>
+        {% endfor %}
+      </div>
+      <div class="z-days-axis"><span>{{ data.daily[0].date }}</span><span>{{ data.daily[-1].date }}</span></div>
+      <p class="z-u-note">Gold: days with a GPU slice. Grey: CPU only. Hover a bar for the hours.</p>
+    {% else %}
+      <p class="z-muted" style="margin:0">No usage this month.</p>
+    {% endif %}
+  </div>
+
+  <div class="z-card">
+    <h2>Sessions</h2>
+    {% if data.sessions %}
+    <div class="z-table-wrap">
+    <table class="z-table">
+      <thead><tr><th>Started</th><th>Ended</th><th>Size</th><th class="n">Duration</th><th class="n">GPU busy</th></tr></thead>
+      <tbody>
+      {% for s in data.sessions %}
+        <tr>
+          <td>{{ when(s.start) }}</td>
+          <td>{% if s.running %}<span class="z-pill is-ok">running</span>{% else %}{{ when(s.end) }}{% endif %}</td>
+          <td>{{ data.resources.get("gpu:" ~ s.gpu_resource, "CPU only") if s.gpu_resource else "CPU only" }}</td>
+          <td class="n">{{ (s.minutes // 60)|int }}h {{ "%02d"|format(s.minutes % 60) }}m{% if s.backfilled_minutes %} <span class="z-muted" title="{{ s.backfilled_minutes }} minutes filled in after a meter gap">*</span>{% endif %}</td>
+          <td class="n">{{ pct(s.gpu_busy_avg) if s.gpu_resource else "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+      <p class="z-muted" style="margin:0">No sessions this month.</p>
+    {% endif %}
+  </div>
+
+  {% if e and e.adjustments %}
+  <div class="z-card">
+    <h2>Adjustments</h2>
+    <table class="z-table">
+      <thead><tr><th>When</th><th>Resource</th><th class="n">Hours</th><th>Reason</th><th>By</th></tr></thead>
+      <tbody>{% for a in e.adjustments %}
+        <tr><td>{{ when(a.at) }}</td><td>{{ data.resources.get(a.resource, a.resource) }}</td>
+            <td class="n">{{ "%+.2f"|format(a.hours) }}</td><td>{{ a.reason }}</td><td>{{ a.by }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if user.admin %}
+  <div class="z-card">
+    <h2>GPU budget for {{ target }}</h2>
+    <form method="post" action="{{ base_url }}usage/budget" class="z-u-top" style="justify-content:flex-start;align-items:flex-end">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <input type="hidden" name="user" value="{{ target }}">
+      <input type="hidden" name="back_user" value="{{ target }}">
+      <input type="hidden" name="back_month" value="{{ data.month }}">
+      <label class="z-muted" style="display:grid;gap:.25rem;font-size:.8rem">GPU hours per month (blank = no limit)
+        <input type="number" name="gpu_hours" min="0" step="0.5" value="{{ data.budget if data.budget is not none else '' }}"></label>
+      <label class="z-muted" style="display:grid;gap:.25rem;font-size:.8rem">Note
+        <input type="text" name="note" maxlength="200"></label>
+      <button class="z-btn is-sm">Save</button>
+    </form>
+    {% if data.budget_history %}
+      <p class="z-u-note">History:
+      {% for b in data.budget_history %}{{ when(b.at) }} {{ b.by }} → {% if b.gpu_hours is none %}no limit{% else %}{{ "%g"|format(b.gpu_hours) }} h{% endif %}{% if b.note %} ({{ b.note }}){% endif %}{{ "; " if not loop.last }}{% endfor %}</p>
+    {% else %}
+      <p class="z-u-note">No budget set for {{ target }}; the default applies.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+</div>
+{% endblock main %}

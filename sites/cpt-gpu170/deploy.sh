@@ -55,6 +55,27 @@ kubectl apply -f "$SITE/hub-rbac.yaml"
 echo "==> shared WEKA volumes"
 kubectl apply -f "$SITE/shared-pvcs.yaml"
 
+echo "==> usage meter"
+# Before the hub: the hub reads METER_TOKEN from this secret and will not start
+# without it. Created once and never rotated here, so redeploys keep working;
+# delete the secret and redeploy to rotate.
+if ! kubectl -n jupyterhub get secret zai-meter >/dev/null 2>&1; then
+    kubectl -n jupyterhub create secret generic zai-meter \
+        --from-literal=token="$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n')"
+fi
+kubectl -n jupyterhub create configmap zai-meter-app \
+    --from-file=meter.py="$SITE/meter/meter.py" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n jupyterhub create configmap zai-meter-config \
+    --from-file=config.json="$SITE/meter/config.json" --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f "$SITE/meter.yaml"
+# A new meter.py only takes effect on restart (the config is re-read live).
+# Stamping its hash on the pod template restarts the meter exactly when the
+# code changed, and never otherwise.
+app_sha=$(sha256sum "$SITE/meter/meter.py" | cut -c1-16)
+kubectl -n jupyterhub patch deploy/zai-meter --type merge -p \
+    "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"zai/app-sha\":\"$app_sha\"}}}}}" >/dev/null
+kubectl -n jupyterhub rollout status deploy/zai-meter --timeout=180s
+
 echo "==> JupyterHub"
 KUBECONFIG="$KUBECONFIG" VALUES_OVERLAY="$SITE/values.yaml" SHARED_HOSTPATH=0 \
     scripts/05-jupyterhub.sh
