@@ -133,6 +133,12 @@ singleuser:
   # node exporters, ingress. Replace the chart's public-internet rule with one
   # that also excludes CGNAT and link-local. DNS stays allowed by the chart's
   # dnsPorts* rules; the hub and proxy by its own policies.
+  #
+  # With that in place the chart's iptables init container is redundant, and it
+  # cannot run here anyway: it is privileged with NET_ADMIN, which the baseline
+  # Pod Security level enforced on the namespace rejects -- every spawn 403s.
+  cloudMetadata:
+    blockWithIptables: false
   networkPolicy:
     egressAllowRules:
       nonPrivateIPs: false
