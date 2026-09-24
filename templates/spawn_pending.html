@@ -1,7 +1,8 @@
 {% extends "page.html" %}
-{# Overrides jupyterhub/templates/spawn_pending.html. The element ids are
-   driven by the stock progress script (kept verbatim below): #progress-bar,
-   #sr-progress, #progress-message, #progress-log, #progress-details. #}
+{# Overrides jupyterhub/templates/spawn_pending.html. A spinner instead of the
+   stock progress bar: KubeSpawner's percentages jump and stall, so a bar
+   suggested an ETA it could not keep. The script below drives
+   #progress-message, #progress-log and #progress-details. #}
 
 {% block title %}Starting… · ZAI Notebooks{% endblock %}
 
@@ -11,16 +12,28 @@
     <div>
       <div class="z-eyebrow">{{ user.name }}</div>
       <h1>Your server is starting</h1>
-      <p>Usually about fifteen seconds. You'll be taken to JupyterLab as soon as it's ready.</p>
+      <p>You'll be taken to JupyterLab as soon as it's ready.</p>
     </div>
   </div>
+  <style>
+    .z-spin-row { display: flex; align-items: center; gap: .9rem; }
+    .z-spin-row #progress-message { margin: 0; }
+    .z-spinner { flex: none; width: 28px; height: 28px; border-radius: 50%;
+                 border: 3px solid var(--z-inset); border-top-color: var(--z-gold);
+                 animation: z-spin .8s linear infinite; }
+    .z-spinner.is-failed { animation: none; border-color: var(--z-bad); }
+    @keyframes z-spin { to { transform: rotate(360deg); } }
+    /* page.html turns animations off for reduced motion; keep this one, slowed,
+       or the page looks frozen. */
+    @media (prefers-reduced-motion: reduce) {
+      .z-spinner:not(.is-failed) { animation: z-spin 2.4s linear infinite !important; }
+    }
+  </style>
   <div class="z-card">
-    <div class="z-progress">
-      <div id="progress-bar" class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width:0%">
-        <span class="visually-hidden"><span id="sr-progress">0%</span> Complete</span>
-      </div>
+    <div class="z-spin-row" role="status" aria-live="polite">
+      <div id="spinner" class="z-spinner" aria-hidden="true"></div>
+      <p id="progress-message">Requesting your server…</p>
     </div>
-    <p id="progress-message"></p>
     <details id="progress-details">
       <summary>Event log</summary>
       <div id="progress-log"></div>
@@ -34,14 +47,10 @@
 <script type="text/javascript">
   require(["jquery"], function ($) {
     var evtSource = new EventSource("{{ progress_url }}");
-    var progressMessage = $("#progress-message"), progressBar = $("#progress-bar"),
-        srProgress = $("#sr-progress"), progressLog = $("#progress-log");
+    var progressMessage = $("#progress-message"), spinner = $("#spinner"),
+        progressLog = $("#progress-log");
     evtSource.onmessage = function (e) {
       var evt = JSON.parse(e.data);
-      if (evt.progress !== undefined) {
-        var p = evt.progress.toString();
-        progressBar.attr('aria-valuenow', p); srProgress.text(p + '%'); progressBar.css('width', p + '%');
-      }
       var html_message;
       if (evt.html_message !== undefined) { progressMessage.html(evt.html_message); html_message = evt.html_message; }
       else if (evt.message !== undefined) { progressMessage.text(evt.message); html_message = progressMessage.html(); }
@@ -49,9 +58,9 @@
       if (evt.ready) { evtSource.close(); window.location.reload(); }
       if (evt.failed) {
         evtSource.close();
-        progressBar.addClass('bg-danger');
+        spinner.addClass('is-failed');
         $('#progress-details').prop('open', true);
-        progressMessage.after('<p class="z-alert is-bad">The server didn\'t start. The event log below says why; if it mentions a GPU or "insufficient", all 7 slices are in use — try CPU-only or ask an administrator to stop an idle server.</p>');
+        progressMessage.after('<p class="z-alert is-bad">The server didn\'t start. The event log below says why; if it mentions a GPU or "insufficient", every slice in that pool is in use — try CPU-only or ask an administrator to stop an idle server.</p>');
       }
     };
     window._jupyterhub_page_loaded = true;
