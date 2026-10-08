@@ -53,7 +53,17 @@
         {% endif %}
       </ol>
       {% if two_factor_auth_user %}
-      <p class="z-alert is-warn">Your two-factor code is <strong>{{ two_factor_auth_value }}</strong>. Keep it somewhere safe; it isn't shown again.</p>
+      {% set acct = username or 'account' %}
+      {% set otpauth = 'otpauth://totp/' ~ (('ZAI:' ~ acct) | urlencode) ~ '?secret=' ~ two_factor_auth_value ~ '&issuer=ZAI' %}
+      {% set qr = totp_qr(otpauth) if totp_qr is defined else '' %}
+      <style>
+        .z-signup-qr { background: #fff; padding: 1rem; border: 1px solid var(--z-line); border-radius: var(--z-radius); width: min(200px, 55vw); margin: 1rem auto; }
+        .z-signup-qr svg { display: block; width: 100%; height: auto; }
+        .z-signup-key { font-family: var(--z-mono); letter-spacing: .14em; text-align: center; word-break: break-all; margin: .5rem 0 0; }
+      </style>
+      <p class="z-alert is-warn">Two-factor is set up. Scan this now with your authenticator app &mdash; it isn't shown again.</p>
+      {% if qr %}<div class="z-signup-qr">{{ qr }}</div>{% endif %}
+      <p class="z-signup-key">Can't scan? Enter this key: {{ two_factor_auth_value }}</p>
       {% endif %}
       <a class="z-btn" href="{{ base_url }}login">Go to sign in</a>
 

@@ -1,0 +1,71 @@
+{% extends "page.html" %}
+{# /hub/2fa -- post-signup TOTP enrollment, rendered by the 05-two-factor
+   handler in sites/cpt-gpu170/values.yaml. NativeAuthenticator only offers 2FA
+   at signup and can't add it later; this page lets a signed-in user turn it on
+   (scan the QR in Microsoft Authenticator or any TOTP app) or off. #}
+
+{% block title %}Two-factor · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<style>
+  .z-2fa-qr {
+    background: #fff;                 /* QR must stay on white, in both themes */
+    padding: 1rem; border: 1px solid var(--z-line); border-radius: var(--z-radius);
+    width: min(220px, 60vw); margin: 1rem auto;
+  }
+  .z-2fa-qr svg { display: block; width: 100%; height: auto; }
+  .z-2fa-key { font-family: var(--z-mono); letter-spacing: .14em; font-size: 1rem;
+    background: var(--z-inset); border: 1px solid var(--z-line); border-radius: 8px;
+    padding: .6rem .8rem; word-break: break-all; }
+  .z-2fa-uri { word-break: break-all; font-size: .78rem; color: var(--z-muted); }
+  .z-2fa form { margin-top: .9rem; display: grid; gap: .75rem; max-width: 22rem; }
+</style>
+
+<div class="z-page" style="max-width:40rem">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">{{ user.name }}</div>
+      <h1>Two-factor authentication</h1>
+    </div>
+    {% if enabled %}<span class="z-pill is-ok">on</span>{% else %}<span class="z-pill">off</span>{% endif %}
+  </div>
+
+  {% if flash %}<p class="z-alert is-warn" role="status">{{ flash }}</p>{% endif %}
+
+  <div class="z-card z-2fa">
+    {% if enabled %}
+      <p>Two-factor is <strong>on</strong>. At sign-in you'll be asked for the current 6-digit code from your authenticator app, as well as your password.</p>
+      <p class="z-empty">Lost the app or the device? Enter a current code below to turn two-factor off, or ask an administrator to reset your account.</p>
+      <form method="post" action="{{ base_url }}2fa">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="disable">
+        <div class="z-field">
+          <label for="code">Enter a current 6-digit code to turn two-factor off</label>
+          <input id="code" class="z-input" type="text" name="code" inputmode="numeric"
+                 autocomplete="one-time-code" pattern="[0-9 ]{6,7}" placeholder="000000" required>
+        </div>
+        <button class="z-btn is-danger" type="submit">Turn off two-factor</button>
+      </form>
+    {% else %}
+      <p>Scan this with <strong>Microsoft Authenticator</strong>, Google Authenticator or any other TOTP app. Then enter the 6-digit code it shows to switch two-factor on.</p>
+      {% if qr_svg %}
+        <div class="z-2fa-qr">{{ qr_svg }}</div>
+      {% else %}
+        <p class="z-alert is-warn">The QR image isn't available on this deployment. Type the setup key below into your app instead.</p>
+      {% endif %}
+      <p class="z-2fa-key">Setup key: {{ secret }}</p>
+      <p class="z-2fa-uri">Or add manually with: <code>{{ otpauth_uri }}</code></p>
+      <form method="post" action="{{ base_url }}2fa">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="enable">
+        <div class="z-field">
+          <label for="code">6-digit code from the app</label>
+          <input id="code" class="z-input" type="text" name="code" inputmode="numeric"
+                 autocomplete="one-time-code" pattern="[0-9 ]{6,7}" placeholder="000000" required autofocus>
+        </div>
+        <button class="z-btn" type="submit">Turn on two-factor</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock main %}

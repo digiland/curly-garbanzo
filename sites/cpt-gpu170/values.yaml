@@ -335,6 +335,113 @@ hub:
 
       c.KubeSpawner.pre_spawn_hook = _pre_spawn_with_budget
 
+    # Post-signup two-factor (TOTP). NativeAuthenticator only offers 2FA as a
+    # checkbox at signup and has no way to add it later, so this adds /hub/2fa:
+    # a signed-in user scans a QR with Microsoft Authenticator (or any TOTP
+    # app), confirms a 6-digit code, and 2FA is on for subsequent logins. It
+    # writes the same UserInfo.has_2fa / UserInfo.otp_secret columns the
+    # authenticator already checks in authenticate() and is_valid_token().
+    #
+    # The QR is drawn server-side with the `qrcode` package (added to
+    # images/hub/Dockerfile). It is imported lazily so a hub image built before
+    # that change still starts: the page then shows the setup key and the
+    # otpauth:// URI instead of an image.
+    05-two-factor: |
+      import os, re, urllib.parse
+
+      from jupyterhub.handlers import BaseHandler
+      from markupsafe import Markup
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.orm import UserInfo
+      from tornado import web
+
+      _TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "ZAI")
+
+      def _otpauth_uri(username, secret):
+          label = urllib.parse.quote(f"{_TOTP_ISSUER}:{username}")
+          query = urllib.parse.urlencode({"secret": secret, "issuer": _TOTP_ISSUER})
+          return f"otpauth://totp/{label}?{query}"
+
+      def _qr_svg(data):
+          """Inline SVG QR for data, or "" when qrcode isn't installed."""
+          try:
+              import qrcode, qrcode.image.svg
+          except ImportError:
+              return ""
+          img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage)
+          svg = img.to_string()
+          if isinstance(svg, bytes):
+              svg = svg.decode("utf-8")
+          # qrcode sizes the SVG in millimetres; make it fill its container.
+          return re.sub(r'(<svg[^>]*?)\swidth="[^"]*"\s+height="[^"]*"',
+                        r'\1 width="100%" height="100%"', svg, count=1)
+
+      # Exposed to every template as {{ qr_svg(uri) }} so the signup success
+      # page can show the QR too; the /hub/2fa page gets it as a variable.
+      c.JupyterHub.template_vars.update(
+          totp_qr=lambda uri: Markup(_qr_svg(uri)))
+
+      class TwoFactorHandler(BaseHandler):
+          """Enable or disable TOTP for the signed-in user."""
+
+          def _info(self):
+              info = UserInfo.find(self.db, self.current_user.name)
+              if info is None:
+                  raise web.HTTPError(404)
+              return info
+
+          def _back(self, msg):
+              return f"{self.hub.base_url}2fa?" + urllib.parse.urlencode({"msg": msg[:300]})
+
+          @web.authenticated
+          async def get(self):
+              info = self._info()
+              enabled = bool(info.has_2fa)
+              uri = _otpauth_uri(self.current_user.name, info.otp_secret)
+              html = await self.render_template(
+                  "two-factor.html",
+                  enabled=enabled,
+                  secret=info.otp_secret,
+                  otpauth_uri=uri,
+                  qr_svg=Markup(_qr_svg(uri)) if not enabled else "",
+                  flash=self.get_argument("msg", ""),
+              )
+              self.finish(html)
+
+          @web.authenticated
+          async def post(self):
+              info = self._info()
+              action = self.get_body_argument("action", "")
+              code = "".join(self.get_body_argument("code", "").split())
+              # Same check the authenticator runs at login (onetimepass, the
+              # current 30s window), so you can only turn 2FA on with a code
+              # that proves the app is already set up, and only off with a code
+              # that proves you still hold it.
+              if not code.isdigit() or not info.is_valid_token(code):
+                  self.redirect(self._back(
+                      "That code didn't match. Enter the current 6-digit code from your app."))
+                  return
+              if action == "enable":
+                  info.has_2fa = True
+                  self.db.commit()
+                  self.redirect(self._back(
+                      "Two-factor authentication is on. You'll be asked for a code at your next sign-in."))
+              elif action == "disable":
+                  info.has_2fa = False
+                  self.db.commit()
+                  self.redirect(self._back("Two-factor authentication is off."))
+              else:
+                  self.redirect(self._back("Nothing to do."))
+
+      _two_factor_handlers = [(r"/2fa", TwoFactorHandler)]
+
+      _na_get_handlers_2fa = NativeAuthenticator.get_handlers
+
+      def _get_handlers_2fa(self, app):
+          return list(_na_get_handlers_2fa(self, app)) + _two_factor_handlers
+
+      NativeAuthenticator.get_handlers = _get_handlers_2fa
+
 singleuser:
   # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
   # metadata server, but this node's own address is 100.70.88.4 -- carrier-grade

@@ -164,7 +164,7 @@ sudo kubectl -n jupyterhub exec deploy/zai-meter -- python3 -c \
 | Signup | Admin approval required (`open_signup: false`); optional reCAPTCHA |
 | Passwords | ≥ 12 characters, common passwords rejected |
 | Brute force | Account locks for 15 min after 5 failures |
-| Two-factor | Offered at signup (`allow_2fa`). **The admin account is created with 2FA on** |
+| Two-factor | Optional TOTP. Offered at signup (`allow_2fa`) and via **Two-factor** in the nav (`/hub/2fa`), where users scan a QR into Microsoft Authenticator / any TOTP app or turn it off. **The admin account is created with 2FA on** |
 | Admin account | Created by `claim-admin.sh` during deploy, *before* any tunnel exists, with a random password. It is never claimable by a stranger |
 | Sessions | Expire after 1 day; cookies marked `Secure` |
 | Admin powers | `admin_access: false`: admins manage users and servers but **cannot open a user's server** |
@@ -201,8 +201,10 @@ sudo kubectl -n jupyterhub exec deploy/zai-meter -- python3 -c \
    biggest single improvement, and it is dashboard configuration, not code.
 2. Set `RECAPTCHA_KEY` / `RECAPTCHA_SECRET` in `.env` so bots can't fill the
    approval queue.
-3. Tell users to tick "two-factor" at signup. NativeAuthenticator can't
-   require it, and can't add it later.
+3. Tell users to enable two-factor. It's opt-in at signup and can also be set
+   up later from **Two-factor** in the nav (`/hub/2fa`), which shows a QR to scan
+   with Microsoft Authenticator or any TOTP app. NativeAuthenticator still can't
+   enforce it, so it stays per-user.
 
 ## Changing the MIG layout
 
