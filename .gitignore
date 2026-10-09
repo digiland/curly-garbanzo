@@ -7,3 +7,6 @@ auth.json
 kubeconfig
 *.log
 __pycache__/
+
+# Personal Claude Code settings for this checkout.
+.claude/settings.local.json

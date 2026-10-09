@@ -29,6 +29,20 @@ hub:
     METER_TOKEN:
       valueFrom:
         secretKeyRef: {name: zai-meter, key: token}
+    # Optional (see 06-caimex-accounts below). Without all four, approving a
+    # user does nothing on the Caimex side.
+    CAIMEX_API_URL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: api-url, optional: true}
+    CAIMEX_ORG_ID:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: org-id, optional: true}
+    CAIMEX_SERVICE_EMAIL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: email, optional: true}
+    CAIMEX_SERVICE_PASSWORD:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: password, optional: true}
   config:
     JupyterHub:
       # Admins can stop, start and approve users, but NOT open a user's running
@@ -441,6 +455,244 @@ hub:
           return list(_na_get_handlers_2fa(self, app)) + _two_factor_handlers
 
       NativeAuthenticator.get_handlers = _get_handlers_2fa
+
+    # Caimex website accounts. When a user becomes approved, the hub pre-creates
+    # their account in our Caimex organization; Caimex emails them a single-use
+    # link to choose a password. The hub never sees or sets a Caimex password
+    # (it only holds a hash of the notebook one, so it has nothing to send).
+    #
+    #   provision   POST /api/organizations/{org}/members/provision
+    #               only for emails on a domain the organization has verified
+    #   invitation  POST /api/organizations/{org}/invitations
+    #               fallback for every other address
+    #
+    # Caimex's organization endpoints take a sign-in session, not an API key,
+    # so the hub signs in as a dedicated Caimex account (a member of the
+    # organization allowed to manage members and invitations) and keeps the
+    # token until Caimex stops accepting it. That account must NOT have
+    # two-factor on: there is nobody here to type the code.
+    #
+    # Hooked on UserInfo.change_authorization, which both the Approve button
+    # (/hub/authorize/NAME) and the emailed self-approval link (/hub/confirm/...)
+    # go through. It is a toggle, so only the flip TO authorized counts; Revoke
+    # leaves the Caimex account alone.
+    #
+    # Approval never waits on Caimex and never fails because of it: the call
+    # runs in the background, the outcome is recorded in zai_caimex_accounts
+    # (hub database) and shown on /hub/authorize, and anything not yet done is
+    # tried again when that user starts a server. That retry is also what picks
+    # up users approved before this existed and admins approved at signup.
+    06-caimex-accounts: |
+      import asyncio, datetime, json, os, time
+
+      import sqlalchemy as sa
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.orm import UserInfo
+      from tornado.httpclient import AsyncHTTPClient, HTTPRequest
+      from traitlets.log import get_logger
+
+      _CX_URL = os.environ.get("CAIMEX_API_URL", "").strip().rstrip("/")
+      _CX_ORG = os.environ.get("CAIMEX_ORG_ID", "").strip()
+      _CX_EMAIL = os.environ.get("CAIMEX_SERVICE_EMAIL", "").strip()
+      _CX_PASSWORD = os.environ.get("CAIMEX_SERVICE_PASSWORD", "")
+      _CX_ON = bool(_CX_URL and _CX_ORG and _CX_EMAIL and _CX_PASSWORD)
+      _CX_DONE = ("provisioned", "existing", "invited")
+
+      # Own MetaData, not JupyterHub's Base: the hub's schema check and
+      # migrations never see this table.
+      _cx_table = sa.Table(
+          "zai_caimex_accounts", sa.MetaData(),
+          sa.Column("username", sa.Unicode(255), primary_key=True),
+          sa.Column("email", sa.Unicode(320)),
+          sa.Column("status", sa.Unicode(32)),
+          sa.Column("detail", sa.Unicode(600)),
+          sa.Column("updated_at", sa.DateTime))
+      # The hub's one database session (handlers' self.db is the same object),
+      # captured in get_handlers below; None until then.
+      _cx = {"db": None, "token": None, "login_failed": None}
+      _cx_busy, _cx_tasks = set(), set()
+
+      def _cx_get(db, username):
+          row = db.execute(
+              sa.select(_cx_table.c.status, _cx_table.c.detail)
+              .where(_cx_table.c.username == username)).first()
+          return (row[0], row[1] or "") if row else (None, "")
+
+      def _cx_set(db, username, email, status, detail=""):
+          db.execute(_cx_table.delete().where(_cx_table.c.username == username))
+          db.execute(_cx_table.insert().values(
+              username=username, email=email, status=status, detail=detail[:600],
+              updated_at=datetime.datetime.utcnow()))
+          db.commit()
+
+      async def _cx_fetch(path, body, token=None):
+          headers = {"Content-Type": "application/json"}
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+          req = HTTPRequest(
+              _CX_URL + path, method="POST", headers=headers,
+              body=json.dumps(body), connect_timeout=5, request_timeout=20)
+          # raise_error=False covers HTTP statuses only; a refused connection,
+          # DNS failure or timeout still raises. Report those as 599 too.
+          try:
+              resp = await AsyncHTTPClient().fetch(req, raise_error=False)
+          except Exception as e:
+              get_logger().warning("caimex %s: %s", path, e)
+              return 599, {}
+          try:
+              data = json.loads(resp.body) if resp.body else {}
+          except ValueError:
+              data = {}
+          return resp.code, data if isinstance(data, dict) else {}
+
+      async def _cx_login():
+          """Sign in and cache the token. Returns None, or (code, data) to
+          report as the failure. Caimex throttles sign-in attempts per address,
+          so a refusal is not retried for five minutes."""
+          failed = _cx["login_failed"]
+          if failed and time.monotonic() - failed[0] < 300:
+              return failed[1]
+          code, data = await _cx_fetch(
+              "/api/auth/login", {"email": _CX_EMAIL, "password": _CX_PASSWORD})
+          if code == 200 and data.get("access_token"):
+              _cx["token"], _cx["login_failed"] = data["access_token"], None
+              return None
+          if code == 599:
+              return 599, {}
+          if code == 200 and data.get("mfa_required"):
+              why = "the Caimex service account has two-factor on; turn it off"
+          else:
+              why = "Caimex sign-in refused: " + _cx_reason(code, data)
+          _cx["login_failed"] = (time.monotonic(), (401, {"detail": why}))
+          return _cx["login_failed"][1]
+
+      async def _cx_post(path, body):
+          """POST to an organization endpoint, signing in first if needed and
+          once more if the cached token has expired (they last a day)."""
+          for attempt in (1, 2):
+              if not _cx["token"]:
+                  failure = await _cx_login()
+                  if failure:
+                      return failure
+              code, data = await _cx_fetch(
+                  f"/api/organizations/{_CX_ORG}{path}", body, _cx["token"])
+              if code != 401 or attempt == 2:
+                  return code, data
+              _cx["token"] = None
+
+      def _cx_reason(code, data):
+          if code == 599:
+              return "Caimex could not be reached"
+          return f"HTTP {code} {json.dumps(data)}"[:280]
+
+      async def _cx_provision(username):
+          db = _cx["db"]
+          if db is None or username in _cx_busy:
+              return
+          _cx_busy.add(username)
+          email = ""
+          try:
+              info = UserInfo.find(db, username)
+              if info is None or not info.is_authorized:
+                  return
+              if _cx_get(db, username)[0] in _CX_DONE:
+                  return
+              email = (info.email or "").strip()
+              if not email:
+                  _cx_set(db, username, "", "failed", "No email address on file.")
+                  return
+              code, data = await _cx_post("/members/provision",
+                                          {"email": email, "role": "member"})
+              if code == 201:
+                  _cx_set(db, username, email,
+                          "existing" if data.get("existing_account") else "provisioned")
+                  return
+              if code == 409:         # already a member of the organization
+                  _cx_set(db, username, email, "existing")
+                  return
+              why = "provision: " + _cx_reason(code, data)
+              # Bad credentials or an unreachable Caimex fail the invitation
+              # the same way. Anything else is what the invitation is for --
+              # above all 403, which is how Caimex refuses an address whose
+              # domain the organization has not verified.
+              if code not in (401, 599):
+                  code, data = await _cx_post("/invitations",
+                                              {"email": email, "role": "member"})
+                  if code == 201:
+                      _cx_set(db, username, email, "invited")
+                      return
+                  if code == 409:
+                      _cx_set(db, username, email, "existing")
+                      return
+                  why += "; invitation: " + _cx_reason(code, data)
+              get_logger().error("caimex account for %s: %s", username, why)
+              _cx_set(db, username, email, "failed", why)
+          except Exception as e:
+              get_logger().error("caimex account for %s: %s", username, e)
+              try:
+                  db.rollback()
+                  _cx_set(db, username, email, "failed", str(e))
+              except Exception:
+                  db.rollback()
+          finally:
+              _cx_busy.discard(username)
+
+      def _cx_schedule(username):
+          """Start provisioning in the background; never raises."""
+          if not _CX_ON:
+              return
+          try:
+              task = asyncio.ensure_future(_cx_provision(username))
+          except RuntimeError:        # no running loop (called from a script)
+              return
+          _cx_tasks.add(task)         # the loop only holds a weak reference
+          task.add_done_callback(_cx_tasks.discard)
+
+      _na_change_authorization = UserInfo.change_authorization.__func__
+
+      def _change_authorization(cls, db, username):
+          user = _na_change_authorization(cls, db, username)
+          if user.is_authorized:
+              _cx_schedule(username)
+          return user
+
+      UserInfo.change_authorization = classmethod(_change_authorization)
+
+      _na_get_handlers_cx = NativeAuthenticator.get_handlers
+
+      def _get_handlers_cx(self, app):
+          if _CX_ON:
+              try:
+                  _cx_table.create(app.db.get_bind(), checkfirst=True)
+                  _cx["db"] = app.db
+              except Exception as e:
+                  self.log.error("caimex accounts disabled, no status table: %s", e)
+          return _na_get_handlers_cx(self, app)
+
+      NativeAuthenticator.get_handlers = _get_handlers_cx
+
+      def _cx_status(username):
+          """(status, detail) for the Approve page; status None = not tried yet."""
+          try:
+              return _cx_get(_cx["db"], username)
+          except Exception:
+              return (None, "")
+
+      # JupyterHub CALLS any callable in template_vars with the current user and
+      # hands the template the result, so a function meant for the template to
+      # call has to be returned from one.
+      c.JupyterHub.template_vars.update(
+          caimex_on=_CX_ON, caimex_status=lambda user: _cx_status)
+
+      _pre_spawn_before_caimex = (c.KubeSpawner["pre_spawn_hook"]
+                                  if "pre_spawn_hook" in c.KubeSpawner else None)
+
+      async def _pre_spawn_with_caimex(spawner):
+          _cx_schedule(spawner.user.name)
+          if _pre_spawn_before_caimex:
+              await _pre_spawn_before_caimex(spawner)
+
+      c.KubeSpawner.pre_spawn_hook = _pre_spawn_with_caimex
 
 singleuser:
   # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
