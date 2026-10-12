@@ -62,6 +62,11 @@
       {% endif %}
       <input type="submit" id="login_submit" class="z-btn is-block" value="Sign in">
     </form>
+    {# Set by a site's caimex-accounts config; absent on sites without it. The
+       account is created at sign-in, so this is where people need to be told. #}
+    {% if caimex_on is defined and caimex_on %}
+    <p class="aside">Signing in also sets up your Caimex account with the same email and password, if you do not have one yet. Caimex will email you to confirm your address. It will also send an invitation, which is already accepted for you and can be ignored. After that, <strong>Open Caimex</strong> in the menu takes you there signed in.</p>
+    {% endif %}
 
     {% if enable_signup %}
     <p class="aside">No account yet? <a href="{{ base_url }}signup">Request access</a>.</p>

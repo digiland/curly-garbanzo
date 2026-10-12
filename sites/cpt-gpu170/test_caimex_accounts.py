@@ -554,6 +554,10 @@ class Pages(CaimexCase):
         self.assertIn('href="{{base_url}}caimex"', template("page.html"))
         self.assertIn("caimex_on is defined and caimex_on", template("page.html"))
         self.assertIn("creates your Caimex account", template("signup.html"))
+        # Existing users never see the signup page; the login page tells them.
+        login = template("native-login.html")
+        self.assertIn("sets up your Caimex account", login)
+        self.assertIn("caimex_on is defined and caimex_on", login)
 
     def test_handlers_are_registered_beside_the_authenticators(self):
         paths = [handler[0] for handler in self.handlers]
