@@ -1,0 +1,24 @@
+{% extends "page.html" %}
+{# Shown by /hub/caimex (a site's caimex-accounts config) when the hub holds no
+   Caimex session for this user: after a hub restart, or on a tab older than a
+   day. The handler passes again_url and caimex_url. #}
+
+{% block title %}Open Caimex · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page" style="max-width:40rem">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">Caimex</div>
+      <h1>Sign in again to open Caimex</h1>
+    </div>
+  </div>
+  <div class="z-card">
+    <p>Opening Caimex without a second sign-in needs a fresh sign-in here first. Yours has been open a while, or the service restarted since. Your server and files are not affected.</p>
+    <div style="display:flex;gap:.75rem;flex-wrap:wrap">
+      <a class="z-btn" role="button" href="{{ again_url }}">Sign in again</a>
+      <a class="z-btn is-quiet" role="button" href="{{ caimex_url }}">Use the Caimex sign-in page</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -62,11 +62,10 @@
             {% if show_caimex %}
             {% set cx = caimex_status(u.username) %}
             <td>
-              {% if cx[0] == 'provisioned' %}<span class="z-pill is-ok">activation email sent</span>
-              {% elif cx[0] == 'existing' %}<span class="z-pill is-ok">already had one</span>
-              {% elif cx[0] == 'invited' %}<span class="z-pill is-ok">invitation sent</span>
-              {% elif cx[0] == 'failed' %}<span class="z-pill is-warn" title="{{ cx[1] }}">failed — retried at next server start</span>
-              {% else %}<span class="z-pill">created at next server start</span>{% endif %}
+              {% if cx[0] == 'created' %}<span class="z-pill is-ok">created</span>
+              {% elif cx[0] == 'invited' %}<span class="z-pill is-ok" title="This address already had a Caimex account, so it was invited to the organization instead.">invited</span>
+              {% elif cx[0] == 'failed' %}<span class="z-pill is-warn" title="{{ cx[1] }}">failed, retried at next sign-in</span>
+              {% else %}<span class="z-pill">created at first sign-in</span>{% endif %}
             </td>
             {% endif %}
             <td class="actions">

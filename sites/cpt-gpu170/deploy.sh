@@ -76,19 +76,20 @@ kubectl -n jupyterhub patch deploy/zai-meter --type merge -p \
     "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"zai/app-sha\":\"$app_sha\"}}}}}" >/dev/null
 kubectl -n jupyterhub rollout status deploy/zai-meter --timeout=180s
 
-echo "==> Caimex account provisioning"
+echo "==> Caimex accounts"
 # Optional, and before the hub, which reads these at start. Same rule as the
 # other secrets: a redeploy without the values keeps what is already there.
 if [ -n "${CAIMEX_SERVICE_PASSWORD:-}" ]; then
     kubectl -n jupyterhub create secret generic caimex-provision \
         --from-literal=api-url="${CAIMEX_API_URL:-}" \
+        --from-literal=web-url="${CAIMEX_WEB_URL:-}" \
         --from-literal=org-id="${CAIMEX_ORG_ID:-}" \
         --from-literal=email="${CAIMEX_SERVICE_EMAIL:-}" \
         --from-literal=password="$CAIMEX_SERVICE_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
 elif kubectl -n jupyterhub get secret caimex-provision >/dev/null 2>&1; then
     echo "note: CAIMEX_SERVICE_PASSWORD unset - keeping the existing caimex-provision secret"
 else
-    echo "note: CAIMEX_SERVICE_PASSWORD unset - approved users will not get Caimex accounts"
+    echo "note: CAIMEX_SERVICE_PASSWORD unset - users will not get Caimex accounts"
 fi
 
 echo "==> JupyterHub"
