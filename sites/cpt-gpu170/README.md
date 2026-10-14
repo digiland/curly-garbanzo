@@ -206,6 +206,94 @@ sudo kubectl -n jupyterhub exec deploy/zai-meter -- python3 -c \
    with Microsoft Authenticator or any TOTP app. NativeAuthenticator still can't
    enforce it, so it stays per-user.
 
+## GPU budgets: warnings and automatic stop
+
+A budget used to be checked only when a GPU server started, so someone with
+an hour left could start a server and keep it for weeks. Now a running GPU
+server is warned as its owner's monthly hours run down, and stopped after
+they run out. The code is the `08-budget-enforcement` block in `values.yaml`.
+
+### Setting a budget
+
+| Where | How |
+|---|---|
+| **Approve users** | The box beside **Approve** holds the GPU hours per month the person asked for on the request-access form. Change it if you like, then approve: that approves them and sets the budget in one step. Clear the box to approve with no budget of their own |
+| **Usage** (`/hub/usage`) | As before: set or change anyone's budget, or the default for everyone |
+
+If the usage meter cannot save the budget, the person is not approved and the
+page says so. Approving first would leave them with no limit and nobody told.
+
+People approved before this existed have no budget unless one was set by
+hand. They are never warned or stopped.
+
+### What happens to a running GPU server
+
+Every two minutes the hub asks the usage meter how much of the month's budget
+each running GPU server's owner has used.
+
+| Usage | What happens |
+|---|---|
+| Under 90% | Nothing |
+| 90% | First warning |
+| 100% | Final warning, with the time the server will stop |
+| 15 minutes later | The GPU server is stopped. Files are kept. A CPU-only server still starts |
+
+- **Missing data never stops anything.** If the meter cannot be reached, the
+  hub does nothing and logs it.
+- **Raising the budget cancels the stop**, even inside the 15 minutes.
+- **Each warning is given once a month.** What has been decided is kept in the
+  hub database (`zai_budget_notices`), so a hub restart forgets nothing.
+- **CPU-only servers are never stopped**, however far over budget.
+- **A new month starts clean**, because usage does.
+
+### Warn-only mode, and switching enforcement on
+
+It ships in warn-only mode. People are warned, and the hub logs which
+servers it would have stopped, but nothing is stopped. In this mode the pages
+never promise a stop time.
+
+Watch the log for a while:
+
+```bash
+sudo kubectl -n jupyterhub logs deploy/hub | grep "gpu budget"
+```
+
+Lines read `gpu budget: warn NAME`, `final NAME`, `would-stop NAME` and
+`clear NAME`, each with the hours used and the budget. When `would-stop` is
+picking the right servers, set `BUDGET_ENFORCE: "true"` under `hub.extraEnv`
+in `values.yaml` and run `deploy.sh`. The log then says `stop NAME`.
+
+| Setting (`hub.extraEnv`) | Default | Meaning |
+|---|---|---|
+| `BUDGET_ENFORCE` | `"false"` | `"true"` stops servers; anything else is warn-only |
+| `BUDGET_GRACE_MINUTES` | `"15"` | Minutes between the final warning and the stop |
+
+At start the hub logs one line saying which mode it is in.
+
+### Where people see the warnings
+
+- The **GPU hours this month** card on the control panel.
+- Their own **Usage** page, which shows the stop time during the final warning.
+
+There is no email yet. Someone who stays inside JupyterLab and does not look
+at the hub will not see a warning before their server stops. JupyterLab saves
+open notebooks every couple of minutes, so files are safe, but a computation
+that is still running is lost. Sending the warnings by email needs a sending
+address for the site.
+
+### What admins see
+
+On the admin **Usage** page, a marker beside a person's name says `warned`,
+`final warning`, `stopped` or, in warn-only mode, `would have stopped`. Hover
+for the time.
+
+### Tests
+
+```bash
+pip install jupyterhub jupyterhub-nativeauthenticator==1.2.0 pyyaml
+cd sites/cpt-gpu170 && python3 -m unittest test_budget_enforcement
+```
+
 ## The request-access form
 
 Signing up here is an application, not just a username and password. The
@@ -267,8 +355,8 @@ second person. Only administrators can read them.
 
 ### Not done yet
 
-- The GPU hours asked for are recorded but do not set the user's budget.
-  An administrator still sets that on `/hub/usage`.
+- The months of access asked for are recorded but nothing ends access when
+  they are up.
 - Three colleagues from one organisation each fill in the organisation
   section. There is no "join an existing organisation".
 

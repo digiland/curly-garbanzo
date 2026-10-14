@@ -156,7 +156,8 @@
         <tr>
           <td><a href="{{ base_url }}usage?user={{ e.user }}&month={{ data.month }}">{{ e.user }}</a>
               {% if e.running %}<span class="z-pill is-ok">running</span>{% endif %}
-              {% if e.adjustments %}<span class="z-pill is-gold" title="Includes adjustments">adj</span>{% endif %}</td>
+              {% if e.adjustments %}<span class="z-pill is-gold" title="Includes adjustments">adj</span>{% endif %}
+              {% if budget_marks is defined %}{% for label, when in budget_marks(e.user, data.month) %}<span class="z-pill is-warn" title="{{ when }}">{{ label }}</span>{% endfor %}{% endif %}</td>
           <td class="n">{{ hours(it.get("gpu:mig-1g.35gb", {}).get("hours")) }}</td>
           <td class="n">{{ hours(it.get("gpu:mig-2g.35gb", {}).get("hours")) }}</td>
           <td class="n">{{ hours(it.get("cpu", {}).get("hours")) }}</td>
@@ -205,7 +206,11 @@
           <input type="text" name="note" maxlength="200"></label>
         <button class="z-btn is-sm">Save budget</button>
         <p class="z-u-note" style="margin:0">Current default: {% if data.default_budget is none %}no limit{% else %}{{ "%g"|format(data.default_budget) }} h{% endif %}.
-          When a user reaches their budget, GPU servers are refused at start; CPU only still works. A server that is already running is not stopped.</p>
+          When a user reaches their budget, GPU servers are refused at start; CPU only still works.
+          {% if budget_on is defined and budget_on %}
+            {% if budget_enforce %}A GPU server that is already running is warned at 90%, and stopped {{ budget_grace_minutes }} minutes after the budget runs out.
+            {% else %}Warn-only mode: a running GPU server is warned at 90% and at 100%, but not stopped. The hub log and the table above show which servers would have been.{% endif %}
+          {% else %}A server that is already running is not stopped.{% endif %}</p>
       </form>
       <form method="post" action="{{ base_url }}usage/adjust">
         <input type="hidden" name="_xsrf" value="{{ xsrf }}">
@@ -251,6 +256,23 @@
     <p class="z-alert is-bad">This month's GPU budget is used up. New GPU servers won't start until next month; CPU only still works.</p>
   {% elif data.budget is not none and e and e.gpu_hours >= 0.8 * data.budget %}
     <p class="z-alert" style="background:var(--z-warn-soft);color:var(--z-warn)">You've used over 80% of this month's GPU budget.</p>
+  {% endif %}
+  {% if budget_on is defined and budget_on and target == user.name %}
+  {# The one thing the totals above cannot say: when a running server stops. #}
+  <p id="z-budget-final" class="z-alert is-bad" role="status" style="display:none"></p>
+  <script>
+    fetch("{{ base_url }}usage/notice.json", {credentials: "same-origin"})
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || d.stage !== "final") return;
+        var el = document.getElementById("z-budget-final"), at = new Date(d.stops_at);
+        el.textContent = "Your GPU server will stop at " +
+          at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) +
+          ". Save your work now. Your files are kept, and a CPU-only server will still start.";
+        el.style.display = "";
+      })
+      .catch(function () {});
+  </script>
   {% endif %}
 
   <div class="z-card">
