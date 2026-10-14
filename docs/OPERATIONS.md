@@ -25,7 +25,20 @@ than the signup that caused it.
 |---|---|
 | `/hub/authorize` | Approve pending signups (nav: **Approve users**) |
 | `/hub/admin` | List users, stop servers (frees a MIG slice), delete users |
+| `/hub/usage` | GPU / CPU-only hours per user, this month / 30 days / all time; `?format=csv` to export (nav: **Usage**) |
 | `/hub/change-password` | Anyone changing their own password |
+
+### Usage accounting
+
+`/hub/usage` is fed by `extraConfig` `03-usage-accounting` in
+`charts/jupyterhub-values.yaml`: a KubeSpawner subclass writes one row per
+server session (user, profile, GPU or not, start, stop) to
+`/srv/jupyterhub/usage.sqlite` on the hub PVC — next to `jupyterhub.sqlite`, so
+it survives hub restarts and upgrades. "GPU hours" means hours a server *held*
+a MIG slice; it does not know whether the GPU was busy (that needs DCGM +
+Prometheus, see CLUSTER.md). Recording starts when this config is first
+deployed; there is no earlier history. If the hub is down while a pod dies, the
+session is closed when the hub comes back, so it over-counts by the downtime.
 
 ## The admin account is load-bearing — and claimable
 

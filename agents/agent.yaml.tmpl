@@ -1,0 +1,75 @@
+# One user's agent. Rendered by new-agent.sh (USER_NAME is replaced).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-USER_NAME
+  namespace: agents
+  labels: { component: agent, agent-user: USER_NAME }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 10Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-USER_NAME
+  namespace: agents
+  labels: { component: agent, agent-user: USER_NAME }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { component: agent, agent-user: USER_NAME }
+  template:
+    metadata:
+      labels: { component: agent, agent-user: USER_NAME }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: caimex
+          image: local/caimex-agent:futurezim-cloud
+          imagePullPolicy: Never
+          ports: [{ containerPort: 4096 }]
+          # Only what the agent needs: its password and the Caimex gateway key, which all
+          # agents share (secret caimex-shared; rotate with agents/set-api-key.sh).
+          env:
+            - name: OPENCODE_PASSWORD
+              valueFrom: { secretKeyRef: { name: agent-USER_NAME, key: password } }
+            - name: CAIMEX_API_KEY
+              valueFrom: { secretKeyRef: { name: caimex-shared, key: api-key } }
+          volumeMounts:
+            - { name: home, mountPath: /home/agent }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe:
+            tcpSocket: { port: 4096 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi, ephemeral-storage: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: home
+          persistentVolumeClaim: { claimName: agent-USER_NAME }
+        - name: tmp
+          emptyDir: { sizeLimit: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-USER_NAME
+  namespace: agents
+  labels: { component: agent, agent-user: USER_NAME }
+spec:
+  selector: { component: agent, agent-user: USER_NAME }
+  ports: [{ port: 4096, targetPort: 4096 }]
