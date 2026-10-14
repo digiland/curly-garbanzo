@@ -32,6 +32,7 @@
       <a href="{{ base_url }}usage" style="font-size:.85rem">Details</a>
     </div>
     <p id="z-usage-line" style="margin:.4rem 0 .5rem"></p>
+    <p id="z-budget-notice" class="z-alert" role="status" style="display:none;margin:.25rem 0 .75rem"></p>
     <div class="z-progress" id="z-usage-bar" style="display:none"><div class="progress-bar" style="width:0%"></div></div>
   </div>
   <p class="z-empty">Servers stop on their own after 60 minutes idle, and time is counted while a server runs, so stop it when you're done. Your home directory (20 GB) is kept between sessions; <code>~/team</code> is shared with everyone.</p>
@@ -64,5 +65,35 @@
       card.style.display = "";
     })
     .catch(function () {});
+
+  // Budget warnings (a site's budget-enforcement config). A 404 on a site
+  // without it, or a meter that cannot be reached, shows nothing.
+  fetch("{{ base_url }}usage/notice.json", {credentials: "same-origin"})
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      var text = zaiBudgetNotice(d);
+      if (!text) return;
+      var el = document.getElementById("z-budget-notice");
+      el.textContent = text;
+      el.classList.add(d.stage === "warn" ? "is-warn" : "is-bad");
+      el.style.display = "";
+      document.getElementById("z-usage-card").style.display = "";
+    })
+    .catch(function () {});
+
+  function zaiBudgetNotice(d) {
+    if (!d || !d.stage || d.stage === "none") return "";
+    if (d.stage === "warn")
+      return "You have used " + d.percent + "% of this month's GPU hours." + (d.enforce
+        ? " When they run out, a running GPU server is stopped. Save your work as you go."
+        : " Ask an administrator if you will need more.");
+    if (d.stage === "final") {
+      var at = new Date(d.stops_at);
+      return "Your GPU hours for this month are used up. Your GPU server will stop at " +
+        at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) +
+        ". Save your work now. Your files are kept, and a CPU-only server will still start.";
+    }
+    return "Your GPU hours for this month are used up. A GPU server will not start until next month; CPU only still works.";
+  }
 </script>
 {% endblock %}

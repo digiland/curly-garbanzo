@@ -25,6 +25,9 @@
    request-access form. Absent on sites without it, and None for an account
    that predates the form or was not created through it. #}
 {% set show_request = access_request is defined %}
+{# Set by a site's budget-enforcement config: Approve also sets the person's
+   monthly GPU budget, pre-filled with what they asked for on the form. #}
+{% set approve_with_hours = budget_on is defined and budget_on %}
 {% macro request_details(req) %}
 <details>
   <summary>{{ req.who }} · {{ req.type }} · {{ req.gpu_hours }} GPU hours a month</summary>
@@ -44,8 +47,13 @@
     <span class="z-pill {% if pending %}is-warn{% else %}is-ok{% endif %}">{{ pending | length }} waiting</span>
   </div>
 
+  {% if flash is defined and flash %}<p class="z-alert is-bad" role="alert">{{ flash }}</p>{% endif %}
+
   <section class="z-card">
     <h2>Waiting for approval</h2>
+    {% if approve_with_hours %}
+    <p class="z-empty" style="margin-top:0">The number beside Approve is the person's GPU budget in hours per month, filled in with what they asked for. Change it before approving, or clear it to approve with no budget of their own.</p>
+    {% endif %}
     {% if pending %}
     <div class="z-table-wrap">
       <table class="z-table">
@@ -57,7 +65,17 @@
             <td><strong>{{ u.username }}</strong></td>
             {% if ask_email %}<td><a href="mailto:{{ u.email }}">{{ u.email }}</a></td>{% endif %}
             <td class="actions">
+              {% if approve_with_hours %}
+              <form method="post" action="{{ base_url }}authorize-budget/{{ u.username }}" style="display:flex;gap:.5rem;align-items:center;margin:0">
+                <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+                <input class="z-input" type="number" name="gpu_hours" min="0" max="100000" step="1" inputmode="numeric"
+                       value="{{ req.gpu_hours if req else '' }}" placeholder="no budget" style="width:7.5rem"
+                       aria-label="GPU hours per month for {{ u.username }}" title="GPU hours per month">
+                <button class="z-btn is-sm" type="submit">Approve</button>
+              </form>
+              {% else %}
               <a class="z-btn is-sm" role="button" href="{{ base_url }}authorize/{{ u.username }}">Approve</a>
+              {% endif %}
               <a class="z-btn is-sm is-danger" role="button" href="{{ base_url }}discard/{{ u.username }}">Discard</a>
             </td>
           </tr>

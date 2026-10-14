@@ -29,6 +29,13 @@ hub:
     METER_TOKEN:
       valueFrom:
         secretKeyRef: {name: zai-meter, key: token}
+    # GPU budget enforcement (see 08-budget-enforcement below).
+    # BUDGET_ENFORCE "false" is warn-only: people are warned and the hub logs
+    # which servers it WOULD stop, but stops nothing. Set "true" once the log
+    # shows it choosing the right ones.
+    BUDGET_ENFORCE: "false"
+    # Minutes between the final warning (budget used up) and the stop.
+    BUDGET_GRACE_MINUTES: "15"
     # Optional (see 06-caimex-accounts below). Without all five, nothing is
     # done on the Caimex side.
     CAIMEX_API_URL:
@@ -1129,6 +1136,306 @@ hub:
           access_form={"sectors": _AR_SECTORS, "org_types": _AR_ORG_TYPES,
                        "gpu_sizes": _AR_GPU_SIZES, "consent": _AR_CONSENT},
           access_request=lambda user: _ar_for)
+
+    # GPU budgets that mean something for a server that is already running.
+    # Until now a budget was only checked when a GPU server STARTED (04-usage):
+    # someone with an hour left could start one and keep it for weeks.
+    #
+    #   Approve with hours   /hub/authorize shows the GPU hours the applicant
+    #                        asked for (07-access-requests) in a box beside
+    #                        Approve. Approving sets that as their monthly
+    #                        budget in the meter. Left empty, no budget is set.
+    #   The watcher          every BUDGET_CHECK_SECONDS, for each running GPU
+    #                        server, asks the meter how much of the month's
+    #                        budget is used:
+    #                          90%   first warning
+    #                          100%  final warning; the server stops in
+    #                                BUDGET_GRACE_MINUTES
+    #                          then  the server is stopped (files are kept; a
+    #                                CPU-only server still starts)
+    #
+    # It never acts on missing data: if the meter cannot be reached, nothing
+    # happens. A budget raised during the grace period cancels the stop. CPU
+    # servers and people with no budget are never touched. What has been
+    # decided for each person is kept in zai_budget_notices (hub database), so
+    # a warning is given once and a hub restart forgets nothing.
+    #
+    # Warnings show on the hub's pages (the control panel card and /hub/usage,
+    # through /hub/usage/notice.json). There is no email yet, so someone who
+    # stays inside JupyterLab is not told before the stop.
+    #
+    # Uses _meter (04-usage) and _STATIC_PROFILES / _mig_resource
+    # (03-gpu-capacity): the chart runs these blocks in one namespace.
+    08-budget-enforcement: |
+      import asyncio, datetime, json, os, re, time
+
+      import sqlalchemy as sa
+      from jupyterhub import orm
+      from jupyterhub.handlers import BaseHandler
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.orm import UserInfo
+      from tornado import web
+      from traitlets.log import get_logger
+
+      _BW_WARN_AT = float(os.environ.get("BUDGET_WARN_AT", "0.9"))
+      _BW_GRACE = float(os.environ.get("BUDGET_GRACE_MINUTES", "15")) * 60
+      _BW_EVERY = float(os.environ.get("BUDGET_CHECK_SECONDS", "120"))
+      _BW_ENFORCE = os.environ.get("BUDGET_ENFORCE", "false").strip().lower() == "true"
+      _BW_USER = re.compile(r"^[a-z][a-z0-9-]{2,30}$")
+
+      # One row per person per month. Times are seconds since the epoch.
+      #   warned_at   the 90% warning was raised
+      #   final_at    the budget ran out; the grace period started
+      #   stopped_at  the grace period ended and the server was stopped --
+      #               or, with `enforced` false, WOULD have been (warn-only)
+      _bw_table = sa.Table(
+          "zai_budget_notices", sa.MetaData(),
+          sa.Column("username", sa.Unicode(255), primary_key=True),
+          sa.Column("month", sa.Unicode(7), primary_key=True),
+          sa.Column("warned_at", sa.Float),
+          sa.Column("final_at", sa.Float),
+          sa.Column("stopped_at", sa.Float),
+          sa.Column("enforced", sa.Boolean))
+      _bw = {"db": None, "task": None}
+      _BW_NOTHING = {"warned_at": None, "final_at": None, "stopped_at": None, "enforced": None}
+
+      # These share the hub's session, as NativeAuthenticator's own writes do.
+      # It is rolled back only when one of OUR statements fails.
+      def _bw_load(db, username, month):
+          try:
+              row = db.execute(_bw_table.select().where(
+                  (_bw_table.c.username == username) & (_bw_table.c.month == month))).first()
+          except Exception:
+              db.rollback()
+              raise
+          return dict(_BW_NOTHING) if row is None else {k: getattr(row, k) for k in _BW_NOTHING}
+
+      def _bw_save(db, username, month, state):
+          try:
+              db.execute(_bw_table.delete().where(
+                  (_bw_table.c.username == username) & (_bw_table.c.month == month)))
+              db.execute(_bw_table.insert().values(username=username, month=month, **state))
+              db.commit()
+          except Exception:
+              db.rollback()
+              raise
+
+      def _bw_fraction(used, budget):
+          return 1.0 if budget <= 0 else used / budget
+
+      def _bw_step(state, used, budget, now):
+          """What to do about one running GPU server. Returns (state, action):
+          action is None, "warn", "final", "stop" or "clear". Pure: it decides,
+          the caller acts, and on "stop" the caller records the outcome."""
+          state = dict(state)
+          if budget is None:
+              return state, None
+          fraction = _bw_fraction(used, budget)
+          if fraction < _BW_WARN_AT:
+              # Back under the line: the budget was raised or hours credited.
+              cleared = bool(state["warned_at"] or state["final_at"])
+              state["warned_at"] = state["final_at"] = None
+              return state, "clear" if cleared else None
+          if fraction < 1:
+              action = None if state["warned_at"] else "warn"
+              if state["final_at"]:
+                  action = "clear"             # topped up during the grace period
+              state["warned_at"] = state["warned_at"] or now
+              state["final_at"] = None
+              return state, action
+          state["warned_at"] = state["warned_at"] or now
+          if not state["final_at"]:
+              state["final_at"] = now
+              return state, "final"
+          due = now - state["final_at"] >= _BW_GRACE
+          done = state["stopped_at"] is not None and state["stopped_at"] >= state["final_at"]
+          return state, "stop" if due and not done else None
+
+      def _bw_uses_gpu(spawner):
+          slug = (spawner.user_options or {}).get("profile")
+          profile = next((p for p in _STATIC_PROFILES if p.get("slug") == slug), None)
+          return bool(profile and _mig_resource(profile))
+
+      async def _bw_stop(app, user):
+          """Stop the user's server the way the hub's own Stop button does:
+          take it off the proxy, then stop it."""
+          spawner = user.spawner
+          if spawner.pending:
+              return False             # starting or already stopping; next pass
+          spawner._stop_pending = True
+          try:
+              await app.proxy.delete_user(user, "")
+              await user.stop("")
+          finally:
+              spawner._stop_pending = False
+          return True
+
+      async def _bw_check(app, user, now=None):
+          """One pass over one user. Returns the action taken, for the log."""
+          spawner = user.spawner
+          if not spawner.ready or not _bw_uses_gpu(spawner):
+              return None
+          usage = await _meter(f"/api/check/{user.name}", timeout=5)
+          budget, month = usage.get("budget"), usage.get("month")
+          if budget is None or not month:
+              return None
+          now = time.time() if now is None else now
+          before = _bw_load(app.db, user.name, month)
+          state, action = _bw_step(before, usage.get("gpu_hours_used") or 0, budget, now)
+          if action == "stop":
+              if _BW_ENFORCE:
+                  if not await _bw_stop(app, user):
+                      return None
+                  # A fresh grace period if they are ever running over budget again.
+                  state.update(final_at=None, stopped_at=now, enforced=True)
+              else:
+                  state.update(stopped_at=now, enforced=False)
+                  action = "would-stop"
+          if state != before:
+              _bw_save(app.db, user.name, month, state)
+          if action:
+              get_logger().warning(
+                  "gpu budget: %s %s (%.1f of %g GPU hours in %s)", action, user.name,
+                  usage.get("gpu_hours_used") or 0, budget, month)
+          return action
+
+      async def _bw_pass(app):
+          """Every running server, one at a time. One person's failure -- above
+          all an unreachable meter -- never stops the pass, and never a server."""
+          running = app.db.query(orm.Spawner).filter(orm.Spawner.server != None).all()  # noqa: E711
+          for orm_spawner in running:
+              if orm_spawner.name or orm_spawner.user is None:
+                  continue             # named servers are off on this site
+              try:
+                  await _bw_check(app, app.users[orm_spawner.user])
+              except Exception as e:
+                  get_logger().warning("gpu budget: could not check %s, doing nothing: %s",
+                                       orm_spawner.user.name, e)
+
+      async def _bw_forever(app):
+          get_logger().info(
+              "gpu budget watcher: every %gs, warn at %g%%, %g min grace, %s",
+              _BW_EVERY, _BW_WARN_AT * 100, _BW_GRACE / 60,
+              "ENFORCING" if _BW_ENFORCE else "warn-only (stops nothing)")
+          while True:
+              await asyncio.sleep(_BW_EVERY)
+              try:
+                  await _bw_pass(app)
+              except Exception as e:
+                  get_logger().error("gpu budget watcher pass failed: %s", e)
+
+      # -- what the signed-in user is shown -----------------------------------
+      class BudgetNotice(BaseHandler):
+          """Where the user stands, for the pages to show. Asks the meter now,
+          so it is right even between the watcher's passes."""
+
+          @web.authenticated
+          async def get(self):
+              out = {"stage": "none"}
+              try:
+                  name = self.current_user.name
+                  usage = await _meter(f"/api/check/{name}", timeout=5)
+                  budget, month = usage.get("budget"), usage.get("month")
+                  if budget is not None and month:
+                      used = usage.get("gpu_hours_used") or 0
+                      fraction = _bw_fraction(used, budget)
+                      state = _bw_load(self.db, name, month)
+                      spawner = self.current_user.spawner
+                      running = bool(spawner.ready and _bw_uses_gpu(spawner))
+                      # enforce: whether running out stops a server, so the
+                      # pages never promise a stop that warn-only won't make.
+                      out = {"stage": "none", "percent": round(fraction * 100),
+                             "used": used, "budget": budget, "month": month,
+                             "enforce": _BW_ENFORCE}
+                      if fraction >= 1:
+                          out["stage"] = "over"
+                          if running and _BW_ENFORCE and state["final_at"]:
+                              out["stage"] = "final"
+                              out["stops_at"] = datetime.datetime.fromtimestamp(
+                                  state["final_at"] + _BW_GRACE, datetime.timezone.utc
+                              ).isoformat(timespec="seconds")
+                      elif fraction >= _BW_WARN_AT:
+                          out["stage"] = "warn"
+              except Exception:
+                  out = {"stage": "none"}      # the pages never depend on the meter
+              self.set_header("Content-Type", "application/json")
+              self.set_header("Cache-Control", "no-store")
+              self.finish(json.dumps(out))
+
+      # -- approve, and set the budget, in one action ---------------------------
+      class ApproveWithBudget(BaseHandler):
+          @web.authenticated
+          async def post(self, name):
+              if not self.current_user.admin:
+                  raise web.HTTPError(403)
+              info = UserInfo.find(self.db, name) if _BW_USER.match(name) else None
+              if info is None:
+                  raise web.HTTPError(404)
+              raw = self.get_body_argument("gpu_hours", "").strip()
+              problem = None
+              if raw and (not re.fullmatch(r"[0-9]{1,6}", raw)):
+                  problem = "GPU hours must be a whole number, or empty for no budget."
+              elif raw:
+                  # Budget first: if the meter refuses it, do not approve, or
+                  # the user would start with no limit and nobody would notice.
+                  try:
+                      await _meter("/api/budget", {
+                          "user": name, "gpu_hours": float(raw),
+                          "by": self.current_user.name, "note": "Set at approval"})
+                  except Exception as e:
+                      problem = f"{name} was NOT approved: their GPU budget could not be saved ({e})."
+              if problem:
+                  html = await self.render_template(
+                      "authorization-area.html", flash=problem,
+                      ask_email=self.authenticator.ask_email_on_signup,
+                      users=self.db.query(UserInfo).all())
+                  self.finish(html)
+                  return
+              if not info.is_authorized:
+                  UserInfo.change_authorization(self.db, name)
+              self.redirect(self.hub.base_url + "authorize#" + name)
+
+      _bw_handlers = [(r"/usage/notice\.json", BudgetNotice),
+                      (r"/authorize-budget/([^/]+)", ApproveWithBudget)]
+      _na_get_handlers_bw = NativeAuthenticator.get_handlers
+
+      def _get_handlers_bw(self, app):
+          handlers = list(_na_get_handlers_bw(self, app)) + _bw_handlers
+          try:
+              _bw_table.create(app.db.get_bind(), checkfirst=True)
+              _bw["db"] = app.db
+              if _bw["task"] is None:
+                  _bw["task"] = asyncio.ensure_future(_bw_forever(app))
+          except Exception as e:
+              self.log.error("gpu budget watcher not started: %s", e)
+          return handlers
+
+      NativeAuthenticator.get_handlers = _get_handlers_bw
+
+      def _bw_marks(username, month):
+          """For the admin usage table: [(label, when)] for one person's month."""
+          try:
+              state = _bw_load(_bw["db"], username, month)
+          except Exception:
+              return []
+          when = lambda t: datetime.datetime.fromtimestamp(
+              t, datetime.timezone.utc).strftime("%d %b %H:%M UTC")
+          marks = []
+          if state["stopped_at"]:
+              marks.append(("stopped" if state["enforced"] else "would have stopped",
+                            when(state["stopped_at"])))
+          elif state["final_at"]:
+              marks.append(("final warning", when(state["final_at"])))
+          elif state["warned_at"]:
+              marks.append(("warned", when(state["warned_at"])))
+          return marks
+
+      # budget_marks is wrapped because JupyterHub calls any callable in
+      # template_vars with the current user and hands the template the result.
+      c.JupyterHub.template_vars.update(
+          budget_on=True, budget_enforce=_BW_ENFORCE,
+          budget_grace_minutes=round(_BW_GRACE / 60),
+          budget_marks=lambda user: _bw_marks)
 
 singleuser:
   # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
