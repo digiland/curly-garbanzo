@@ -206,6 +206,79 @@ sudo kubectl -n jupyterhub exec deploy/zai-meter -- python3 -c \
    with Microsoft Authenticator or any TOTP app. NativeAuthenticator still can't
    enforce it, so it stays per-user.
 
+## The request-access form
+
+Signing up here is an application, not just a username and password. The
+applicant says whether they are an individual or an organisation, and the
+form asks the questions that fit. An administrator reads the answers on the
+**Approve users** page before deciding. The code is the `07-access-requests`
+block in `values.yaml`; the form itself is `templates/signup.html`.
+
+### What is asked
+
+| Section | Fields | Asked of |
+|---|---|---|
+| Account | Username, email, password | Everyone |
+| About you | Individual or organisation, full name, phone, country | Everyone |
+| Your organisation | Legal or operating name, one-line description, type, registration number, date founded, and a secondary contact's name, email and phone | Organisations |
+| Your project | Sector, product or project name, the problem, how it is solved today, how they intend to solve it | Everyone |
+| What you need | GPU hours per month, GPU size, months of access | Everyone |
+| Consent | Agreement to the information being stored and used to assess the request | Everyone |
+
+For an organisation, the person filling in the form is the primary contact:
+their name, phone and account email are the primary contact's details.
+
+### Rules
+
+Every field shown is required. The browser enforces that as the applicant
+types, and the hub checks everything again when the form arrives, so a
+tampered page cannot skip a question. An application that fails a rule creates
+no account, and the form comes back filled in with each problem listed.
+
+| Field | Rule |
+|---|---|
+| Short text | A limit per field, from 60 to 200 characters |
+| The three project questions | Up to 1,000 characters each |
+| Phone numbers | Digits, spaces, brackets and hyphens, with an optional leading `+` |
+| Date founded | A real date, not in the future |
+| GPU hours per month | A whole number from 1 to 100,000 |
+| Months of access | A whole number from 1 to 60 |
+| Sector, organisation type, GPU size | One of the listed options. "Other" sector must be named |
+
+To change a list or the consent wording, edit the top of the
+`07-access-requests` block. The form and the checks both read from there.
+
+### What admins see
+
+Under each person on **Approve users** is a line such as "Kumusha Labs,
+Organisation, 30 GPU hours a month". Click it to read the whole application.
+An account created before this form existed, or by `claim-admin.sh`, shows
+"No request form on file".
+
+### What is stored
+
+Applications are kept in the hub database, in the table
+`zai_access_requests`: the answers, the consent wording the applicant agreed
+to, and when. Passwords are not part of it. **Discard** on the Approve page,
+or deleting the account from the admin panel, deletes the application too.
+
+The answers include names and phone numbers, some of them belonging to a
+second person. Only administrators can read them.
+
+### Not done yet
+
+- The GPU hours asked for are recorded but do not set the user's budget.
+  An administrator still sets that on `/hub/usage`.
+- Three colleagues from one organisation each fill in the organisation
+  section. There is no "join an existing organisation".
+
+### Tests
+
+```bash
+pip install jupyterhub jupyterhub-nativeauthenticator==1.2.0 pyyaml
+cd sites/cpt-gpu170 && python3 -m unittest test_access_requests
+```
+
 ## Caimex accounts and one-click sign-in
 
 Optional. When the five `CAIMEX_` settings are present, a user who signs in
