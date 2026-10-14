@@ -264,6 +264,10 @@
     <li class="nav-item"><a class="nav-link" href="{{base_url}}usage">Usage</a></li>
     <li class="nav-item"><a class="nav-link" href="{{base_url}}2fa">Two-factor</a></li>
     <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
+    {# Set by a site's caimex-accounts config; absent on sites without it. #}
+    {% if user and caimex_on is defined and caimex_on %}
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}caimex" target="_blank" rel="noopener">Open Caimex</a></li>
+    {% endif %}
     {% if user and user.admin %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Approve users</a></li>
     {% endif %}
