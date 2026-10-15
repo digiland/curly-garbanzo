@@ -6,3 +6,4 @@
 auth.json
 kubeconfig
 *.log
+__pycache__/

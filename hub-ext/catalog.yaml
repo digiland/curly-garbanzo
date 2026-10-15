@@ -83,6 +83,15 @@ sizes:
   #   gpu: {resource: nvidia.com/mig-3g.71gb, count: 1, vram_gb: 71}
   #   cpu: 8, memory: 48G ...                    price_per_hour: 1.89
 
+# Serverless endpoints (serverless/, docs/SERVERLESS.md). Workers are billed
+# like servers -- by the second at their size's price, from pod creation to
+# deletion, cold start included -- and share gpu_pools with notebooks.
+serverless:
+  enabled: true
+  # GPUs all serverless workers together may hold. The rest stay for notebooks.
+  max_gpus: 2
+  max_workers_per_endpoint: 3
+
 # Curated images. Every template is built FROM the notebook image, so each one
 # still runs JupyterLab, SSH and the port proxy; the template adds an app.
 # Arbitrary customer images are deliberately not offered: on a shared GPU node

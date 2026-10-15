@@ -23,6 +23,20 @@ hub:
       scopes:
         - self
         - shares!user
+    # The serverless gateway (k8s/serverless.yaml) opens, closes and bills GPU
+    # workers through /hub/api/zai/workers/*, and may do nothing else. The
+    # custom scope is defined by hub-ext/zai_platform.py.
+    serverless:
+      name: serverless
+      services: [serverless]
+      scopes:
+        - custom:zai-workers
+
+  # Registering the service makes the chart generate its API token, stored in
+  # the `hub` secret as hub.services.serverless.apiToken -- the gateway reads
+  # it from there, so there is no extra secret to manage.
+  services:
+    serverless: {}
 
   image:
     name: local/k8s-hub-native      # custom: stock hub + jupyterhub-nativeauthenticator
@@ -209,7 +223,12 @@ hub:
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,
       # which forwards to that user's caimex server. The hub keeps this route in the
       # proxy, re-adding it after a proxy restart. Each agent does its own auth.
-      c.Proxy.extra_routes = {"/agents/": "http://agents-router.agents.svc.cluster.local"}
+      c.Proxy.extra_routes = {
+          "/agents/": "http://agents-router.agents.svc.cluster.local",
+          # Serverless endpoints (k8s/serverless.yaml). Until the gateway is
+          # deployed, /v2/ answers 503 and nothing else is affected.
+          "/v2/": "http://serverless-gateway.jupyterhub.svc.cluster.local:8080",
+      }
 
 proxy:
   service:
@@ -232,6 +251,9 @@ singleuser:
     CAIMEX_MODEL: "caimex/Caimex2/deepseek-ai/DeepSeek-V4-Flash"
     # Fills the hostname into ~/.zai/README.md (SSH, ports, API instructions).
     ZAI_PUBLIC_HOST: "notebooks.futurezim.com"
+    # `import zai_serverless` in a notebook, to try a handler before it becomes
+    # an endpoint. The module is the serverless-runtime ConfigMap mounted below.
+    PYTHONPATH: /opt/zai-runtime
     # S3-compatible object storage (DigitalOcean Spaces). Optional: when the
     # secret is absent these are unset and 30-objectstore.sh no-ops, so notebooks
     # still start. Present -> rclone remote + ~/spaces mount, boto3/aws-cli work
@@ -265,6 +287,8 @@ singleuser:
       # it for IPC and die with a bare "bus error" when it fills.
       - name: dshm
         emptyDir: {medium: Memory, sizeLimit: 2Gi}
+      - name: zai-runtime           # created by scripts/12-serverless.sh; optional until then
+        configMap: {name: serverless-runtime, optional: true}
     extraVolumeMounts:
       - name: shared-datasets
         mountPath: /home/jovyan/shared
@@ -273,6 +297,9 @@ singleuser:
         mountPath: /home/jovyan/team
       - name: dshm
         mountPath: /dev/shm
+      - name: zai-runtime
+        mountPath: /opt/zai-runtime
+        readOnly: true
   startTimeout: 600
   defaultUrl: /lab
 

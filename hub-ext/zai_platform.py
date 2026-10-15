@@ -74,6 +74,13 @@ class Catalog:
 
         self.pools = {str(k): int(v) for k, v in (data.get("gpu_pools") or {}).items()}
 
+        sv = data.get("serverless") or {}
+        self.sv_enabled = bool(sv.get("enabled", False))
+        # GPUs serverless workers may hold at once, across everyone. Keeps a
+        # burst of jobs from locking notebook users out of the GPU.
+        self.sv_max_gpus = int(sv.get("max_gpus", 2))
+        self.sv_max_workers = int(sv.get("max_workers_per_endpoint", 3))
+
         self.templates = []
         for t in data.get("templates") or []:
             slug = t["slug"]
@@ -315,6 +322,11 @@ def gpus_in_use(con, pool):
         if res == pool:
             n += cnt
     return n + sum(c for (res, c) in _starting.values() if res == pool)
+
+
+def worker_gpus_in_use(con):
+    return con.execute("SELECT COALESCE(SUM(gpus),0) FROM sessions WHERE kind='worker' AND stopped IS NULL"
+                       ).fetchone()[0]
 
 
 # (user, server) -> (resource, count) for starts in flight, so two people
@@ -746,7 +758,9 @@ def _catalog_json(con, user):
         })
     templates = [{k: t[k] for k in ("slug", "name", "description", "gpu_required", "default")}
                  for t in CATALOG.templates]
-    return {"currency": CATALOG.currency, "enforce": CATALOG.enforce, "sizes": sizes, "templates": templates}
+    return {"currency": CATALOG.currency, "enforce": CATALOG.enforce, "sizes": sizes, "templates": templates,
+            "serverless": {"enabled": CATALOG.sv_enabled, "max_gpus": CATALOG.sv_max_gpus,
+                           "max_workers_per_endpoint": CATALOG.sv_max_workers}}
 
 
 class _ZaiAPI(APIHandler):
@@ -813,6 +827,111 @@ class CreditsAPI(_ZaiAPI):
 
 
 # ---------------------------------------------------------------------------
+# Serverless workers (the gateway, serverless/gateway.py, is the only caller)
+#
+# The hub stays the one place that admits GPU work: a worker gets its GPU and
+# its billing session here, under the same credit and capacity checks as a
+# notebook, so the two can never oversubscribe the slices between them.
+# ---------------------------------------------------------------------------
+
+WORKER_SCOPE = "custom:zai-workers"
+WORKER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
+
+
+class _WorkerAPI(APIHandler):
+    def _check(self):
+        if WORKER_SCOPE not in self.expanded_scopes:
+            raise web.HTTPError(403, f"Needs {WORKER_SCOPE}")
+        body = self.get_json_body() or {}
+        worker = str(body.get("worker", ""))
+        if not WORKER_RE.match(worker):
+            raise web.HTTPError(400, "bad worker id")
+        return body, worker
+
+
+class WorkerOpenAPI(_WorkerAPI):
+    """POST /hub/api/zai/workers/open {"worker", "user", "size", "endpoint"}
+
+    201 {"session"} -- admitted, billing has started
+    402             -- owner lacks credit for min_minutes_to_start
+    409             -- serverless GPU cap reached (try again later)
+    503             -- no free GPU of that size
+    """
+
+    def post(self):
+        body, worker = self._check()
+        if not CATALOG.sv_enabled:
+            raise web.HTTPError(403, "serverless is disabled in the catalog")
+        name = str(body.get("user", ""))
+        u = self.db.query(orm.User).filter_by(name=name).first()
+        if not u:
+            raise web.HTTPError(404, f"No user {name!r}")
+        size = CATALOG.size(str(body.get("size", "")))
+        if not size:
+            raise web.HTTPError(400, "unknown size")
+        rate = 0 if (u.admin and CATALOG.admins_free) else size["rate"]
+        server = f"w:{worker}"
+        now = time.time()
+        with _db() as con:
+            if con.execute("SELECT id FROM sessions WHERE server=? AND stopped IS NULL", (server,)).fetchone():
+                raise web.HTTPError(409, "worker already has a session")
+            if CATALOG.enforce and rate > 0:
+                bal = account(con, name, now)["balance"]
+                need = int(rate * CATALOG.min_minutes / 60)
+                if bal < need:
+                    raise web.HTTPError(402, f"{name} has {CATALOG.money(bal)}; a worker needs {CATALOG.money(need)}")
+            if size["gpu"]:
+                pool, cnt = size["gpu"]["pool"], size["gpu"]["count"]
+                if worker_gpus_in_use(con) + cnt > CATALOG.sv_max_gpus:
+                    raise web.HTTPError(409, "serverless GPU cap reached")
+                if gpus_in_use(con, pool) + cnt > CATALOG.pools[pool]:
+                    raise web.HTTPError(503, f"no free {size['name']}")
+            cur = con.execute(
+                "INSERT INTO sessions(username, server, profile, gpu, started, kind, size, template,"
+                " resource, gpus, rate) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (name, server, size["name"], int(bool(size["gpu"])), now, "worker", size["slug"],
+                 str(body.get("endpoint", ""))[:64],
+                 size["gpu"]["pool"] if size["gpu"] else "",
+                 size["gpu"]["count"] if size["gpu"] else 0, rate))
+        self.log.info("billing: worker %s opened for %s (%s)", worker, name, size["slug"])
+        self.set_status(201)
+        self.finish({"session": cur.lastrowid, "rate_per_hour": rate / MICROS})
+
+
+class WorkerCloseAPI(_WorkerAPI):
+    """POST /hub/api/zai/workers/close {"worker"} -- idempotent; posts the charge."""
+
+    def post(self):
+        body, worker = self._check()
+        now = time.time()
+        with _db() as con:
+            row = con.execute("SELECT username FROM sessions WHERE server=? AND stopped IS NULL",
+                              (f"w:{worker}",)).fetchone()
+            if row:
+                _close_sessions(con, row["username"], f"w:{worker}", now, now)
+        self.finish({"closed": bool(row)})
+
+
+class WorkerAccountsAPI(APIHandler):
+    """GET /hub/api/zai/workers/accounts?user=a&user=b -- balances, for the
+    gateway to admit jobs and to stop workers whose owner ran out of credit."""
+
+    def get(self):
+        if WORKER_SCOPE not in self.expanded_scopes:
+            raise web.HTTPError(403, f"Needs {WORKER_SCOPE}")
+        names = self.get_arguments("user")[:500]
+        out = {}
+        with _db() as con:
+            for n in names:
+                u = self.db.query(orm.User).filter_by(name=n).first()
+                if not u:
+                    continue
+                free = bool(u.admin and CATALOG.admins_free)
+                out[n] = {"balance": account(con, n)["balance"] / MICROS, "free": free}
+        self.finish({"enforce": CATALOG.enforce, "accounts": out})
+
+
+# ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
 
@@ -853,5 +972,12 @@ def configure(c):
         (r"/api/zai/catalog", CatalogAPI),
         (r"/api/zai/me", MeAPI),
         (r"/api/zai/credits", CreditsAPI),
+        (r"/api/zai/workers/open", WorkerOpenAPI),
+        (r"/api/zai/workers/close", WorkerCloseAPI),
+        (r"/api/zai/workers/accounts", WorkerAccountsAPI),
     ]
     c.JupyterHub.extra_handlers = handlers
+
+    scopes = dict(c.JupyterHub.get("custom_scopes", {}) or {})
+    scopes[WORKER_SCOPE] = {"description": "Open, close and bill serverless GPU workers (the gateway only)."}
+    c.JupyterHub.custom_scopes = scopes

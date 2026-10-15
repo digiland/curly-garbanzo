@@ -31,6 +31,8 @@ Live reference deployment: `https://notebooks.futurezim.com`
 - **Templates** — PyTorch, ComfyUI and vLLM images, picked at start time
 - **Remote access** — SSH / scp / VS Code Remote-SSH and authenticated web ports
   through the existing tunnel, plus the `zai` CLI and a small JSON API
+- **Serverless endpoints** — RunPod-compatible `/run` / `/runsync` queue endpoints;
+  workers start on demand, bill by the second, and share the GPU with notebooks
 
 ## Layout
 
@@ -40,7 +42,8 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `host/` | Host-level units: MIG layout service, cloudflared QUIC tuning |
 | `images/` | Dockerfiles for the hub and singleuser images, and `templates/` (ComfyUI, vLLM) |
 | `hub-ext/` | The billing/sizes/templates layer and `catalog.yaml` (prices, sizes, templates) |
-| `cli/zai` | Customers' command-line tool (start/stop, SSH, balance) |
+| `cli/zai` | Customers' command-line tool (start/stop, SSH, balance, serverless jobs) |
+| `serverless/` | Serverless gateway (RunPod-compatible queue endpoints) and the worker runtime |
 | `charts/` | JupyterHub Helm values — base (single node) plus the multi-node overlay |
 | `k8s/` | cloudflared manifest; shared RWX claims and the training-job layer |
 | `templates/` | Branding for the hub's login/signup pages (a ConfigMap, not an image rebuild) |
@@ -48,7 +51,7 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `docs/OPERATIONS.md` | Day-two: onboarding, sizing, quotas, and the two things that take this down |
 | `docs/CLUSTER.md` | Running this on more than one node: what breaks, distributed training, notes on serving inference |
 | `docs/PLATFORM.md` | Selling GPU time: credit and billing, GPU sizes, templates, SSH/ports/API |
-| `docs/SERVERLESS.md` | Research and proposed design for RunPod-style serverless endpoints (not built) |
+| `docs/SERVERLESS.md` | Serverless endpoints: how they work, using them, data handling; the research behind them |
 
 ## Deploy
 
@@ -68,7 +71,8 @@ scripts/99-verify.sh        # health check — run after deploy and after every 
 ```
 
 Optional, any time later: `sudo scripts/11-gpu-layout.sh mixed` to sell larger
-GPU slices (see [docs/PLATFORM.md](docs/PLATFORM.md#gpu-sizes)).
+GPU slices (see [docs/PLATFORM.md](docs/PLATFORM.md#gpu-sizes)), and
+`scripts/12-serverless.sh` for serverless endpoints ([docs/SERVERLESS.md](docs/SERVERLESS.md)).
 
 **Claim the `admin` account before the public hostname is live.** NativeAuthenticator
 treats a signup named `admin` as pre-authorized, so whoever registers it first

@@ -224,6 +224,6 @@ GPU of that size), with a message saying which.
 - **Online payments.** Credit is added by an admin or through
   `/api/zai/credits`; there is no checkout page yet.
 - **Bigger or extra volumes**, and charging for storage.
-- **Serverless endpoints.** See [SERVERLESS.md](SERVERLESS.md). The ledger
-  already records a session `kind` (`notebook` now, `worker` later), and
-  capacity is counted in one place (`gpus_in_use`), so workers will share it.
+- **Serverless endpoints** are built as an MVP; see
+  [SERVERLESS.md](SERVERLESS.md). Workers are `kind='worker'` sessions in the
+  same ledger, and share GPU capacity with notebooks through `gpus_in_use`.

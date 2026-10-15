@@ -12,8 +12,19 @@ page (https://<host>/hub/account) or https://<host>/hub/zai/cli.
     zai url 8000                                # public URL of port 8000 in your server
     zai stop
 
+Serverless endpoints (docs/SERVERLESS.md):
+
+    zai endpoint list
+    zai run <endpoint> '{"prompt": "hi"}' --sync # or --wait; prints the job's result
+    zai job <endpoint> <job-id>                  # status / output
+    zai cancel <endpoint> <job-id>
+    zai health <endpoint>
+    zai endpoint create --owner alice --name echo --size cpu --dir endpoints/echo   # admins
+    zai endpoint delete <endpoint>                                                  # admins
+
 Settings are kept in ~/.config/zai/config.json (mode 600). ZAI_HOST and
-ZAI_TOKEN override it, which is handy in CI.
+ZAI_TOKEN override it, which is handy in CI (ZAI_GATEWAY overrides the
+serverless API's base URL, normally <host>/v2).
 """
 
 import argparse
@@ -88,6 +99,29 @@ def api(cfg, method, path, body=None):
             msg = raw.decode(errors="replace")[:300]
         if e.code == 403 and "token" in msg.lower():
             msg += " (is your token still valid? zai login again)"
+        raise ZaiError(f"{msg} [HTTP {e.code}]") from None
+    except urllib.error.URLError as e:
+        raise ZaiError(f"cannot reach {cfg['host']}: {e.reason}") from None
+
+
+def gateway(cfg, method, path, body=None, timeout=120):
+    """The serverless API, /v2 on the same host, same token."""
+    url = os.environ.get("ZAI_GATEWAY", cfg["host"] + "/v2").rstrip("/") + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            msg = json.loads(raw).get("error") or raw.decode()
+        except ValueError:
+            msg = raw.decode(errors="replace")[:300]
+        if e.code == 503 and not msg.strip():
+            msg = "serverless is not deployed on this hub"
         raise ZaiError(f"{msg} [HTTP {e.code}]") from None
     except urllib.error.URLError as e:
         raise ZaiError(f"cannot reach {cfg['host']}: {e.reason}") from None
@@ -221,6 +255,72 @@ def cmd_balance(a):
     cfg = load_config()
     _, acct = api(cfg, "GET", "/zai/me")
     print("not charged (admin)" if acct["admin_free"] else money(acct["balance"], acct["currency"]))
+
+
+def cmd_endpoint(a):
+    cfg = load_config()
+    if a.action == "list":
+        eps = gateway(cfg, "GET", "/endpoints" + ("?all=1" if a.all else ""))["endpoints"]
+        if not eps:
+            print("No endpoints. An administrator creates them: zai endpoint create --help")
+            return
+        print(f"{'ID':<14} {'NAME':<20} {'OWNER':<16} {'SIZE':<16} {'TEMPLATE':<10} WORKERS")
+        for e in eps:
+            print(f"{e['id']:<14} {e['name'][:20]:<20} {e['owner']:<16} {e['size']:<16} {e['template']:<10} "
+                  f"{e['workers']}/{e['maxWorkers']}")
+    elif a.action == "create":
+        body = {"owner": a.owner, "name": a.name, "size": a.size, "template": a.template,
+                "workdir": a.dir, "command": a.command, "max_workers": a.max_workers,
+                "idle_timeout": a.idle_timeout, "execution_timeout": a.execution_timeout}
+        if a.env:
+            body["env"] = dict(kv.split("=", 1) for kv in a.env)
+        e = gateway(cfg, "POST", "/endpoints", body)
+        print(f"Created {e['id']} ({e['name']}) for {e['owner']}.")
+        print(f"  POST {cfg['host']}/v2/{e['id']}/run      body: {{\"input\": ...}}")
+        print(f"  Workers run `{e['command']}` in ~/{e['workdir']} of {e['owner']}'s home.")
+    elif a.action == "delete":
+        if not a.id:
+            raise ZaiError("zai endpoint delete <endpoint-id>")
+        gateway(cfg, "DELETE", f"/endpoints/{a.id}")
+        print(f"Deleted {a.id}; its queued jobs were cancelled and its workers stopped.")
+
+
+def _print_job(j):
+    print(json.dumps(j, indent=2, ensure_ascii=False))
+
+
+def cmd_run(a):
+    cfg = load_config()
+    try:
+        inp = json.loads(a.input)
+    except ValueError as e:
+        raise ZaiError(f"input must be JSON: {e}")
+    body = {"input": inp}
+    if a.timeout:
+        body["policy"] = {"executionTimeout": a.timeout * 1000}
+    if a.sync:
+        j = gateway(cfg, "POST", f"/{a.endpoint}/runsync", body)
+    else:
+        j = gateway(cfg, "POST", f"/{a.endpoint}/run", body)
+    if a.wait or a.sync:
+        while j["status"] in ("IN_QUEUE", "IN_PROGRESS"):
+            time.sleep(1)
+            j = gateway(cfg, "GET", f"/{a.endpoint}/status/{j['id']}")
+    _print_job(j)
+    if j["status"] in ("FAILED", "TIMED_OUT", "CANCELLED"):
+        raise SystemExit(1)
+
+
+def cmd_job(a):
+    _print_job(gateway(load_config(), "GET", f"/{a.endpoint}/status/{a.job}"))
+
+
+def cmd_cancel(a):
+    _print_job(gateway(load_config(), "POST", f"/{a.endpoint}/cancel/{a.job}"))
+
+
+def cmd_health(a):
+    _print_job(gateway(load_config(), "GET", f"/{a.endpoint}/health"))
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +491,41 @@ def main(argv=None):
     s.add_argument("--alias", default="zai")
     s.set_defaults(fn=cmd_ssh_config)
 
-    sub.add_parser("ssh-proxy", help=argparse.SUPPRESS).set_defaults(fn=cmd_ssh_proxy)
+    sub.add_parser("ssh-proxy", help="(used by ssh's ProxyCommand)").set_defaults(fn=cmd_ssh_proxy)
+
+    s = sub.add_parser("endpoint", help="serverless endpoints: list | create | delete")
+    s.add_argument("action", choices=["list", "create", "delete"])
+    s.add_argument("id", nargs="?", help="endpoint id (delete)")
+    s.add_argument("--all", action="store_true", help="list: everyone's (admins)")
+    s.add_argument("--owner", help="create: the user whose credit and home volume it uses")
+    s.add_argument("--name")
+    s.add_argument("--size", default="cpu", help="create: a size slug (zai sizes)")
+    s.add_argument("--template", default="pytorch")
+    s.add_argument("--dir", help="create: handler directory inside the owner's home, e.g. endpoints/echo")
+    s.add_argument("--command", default="python handler.py")
+    s.add_argument("--max-workers", type=int, default=1)
+    s.add_argument("--idle-timeout", type=int, default=30, help="seconds a worker waits for work before stopping")
+    s.add_argument("--execution-timeout", type=int, default=600)
+    s.add_argument("--env", action="append", metavar="NAME=VALUE")
+    s.set_defaults(fn=cmd_endpoint)
+
+    s = sub.add_parser("run", help="send a job to an endpoint")
+    s.add_argument("endpoint")
+    s.add_argument("input", help="the job's input, as JSON")
+    s.add_argument("--sync", action="store_true", help="use /runsync, then poll until done")
+    s.add_argument("--wait", action="store_true", help="poll /status until done")
+    s.add_argument("--timeout", type=int, help="execution timeout, seconds")
+    s.set_defaults(fn=cmd_run)
+
+    for name, fn, hlp in [("job", cmd_job, "a job's status and output"), ("cancel", cmd_cancel, "cancel a job")]:
+        s = sub.add_parser(name, help=hlp)
+        s.add_argument("endpoint")
+        s.add_argument("job")
+        s.set_defaults(fn=fn)
+
+    s = sub.add_parser("health", help="an endpoint's queue and workers")
+    s.add_argument("endpoint")
+    s.set_defaults(fn=cmd_health)
 
     a = p.parse_args(argv)
     try:

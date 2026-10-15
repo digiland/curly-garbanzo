@@ -1,13 +1,151 @@
-# Serverless GPU endpoints: research and proposed design
+# Serverless GPU endpoints
 
-Status: **proposal, nothing built.** This is step 6, after billing, GPU sizes,
-templates, remote access and the API ([PLATFORM.md](PLATFORM.md)). It records
-what RunPod's serverless product is, what could deliver it on this stack, and
-a recommended design. Claims about external projects link to their source and
-were current as of October 2026. Everything marked *recommendation* is
-judgement, not fact.
+**Status: MVP built** (`serverless/`, `k8s/serverless.yaml`,
+`scripts/12-serverless.sh`). Not yet deployed. The first half of this page is
+how it works and how to use it. The second half is the research and design it
+came from, kept for the later phases.
 
-## What RunPod Serverless is
+## How it works
+
+```
+customer --HTTPS--> tunnel --> hub proxy --/v2/--> gateway :8080
+                                                     | queue (SQLite)
+                                                     | admission + billing --> hub /hub/api/zai/workers/*
+                                                     | create/delete pods --> Kubernetes API
+worker pod (template image + owner's home) <--:8081-- RunPod worker protocol
+```
+
+- **An endpoint** is a handler directory in its owner's home, e.g.
+  `~/endpoints/echo/handler.py`, plus a size and a template. For now an
+  admin creates endpoints for customers.
+- **Customers send jobs** to `POST /v2/<endpoint>/run` (or `/runsync`) with
+  their JupyterHub token. These are the same calls as RunPod's queue
+  endpoints. Statuses: `IN_QUEUE`, `IN_PROGRESS`, `COMPLETED`, `FAILED`,
+  `CANCELLED`, `TIMED_OUT`.
+- **Workers start on demand.** The gateway starts one when jobs are waiting
+  and none is free, up to the endpoint's `max_workers`. A worker is a pod
+  running the endpoint's command in the template image, with the owner's
+  home mounted. It is stopped after `idle_timeout` seconds without work.
+- **Customers' RunPod handlers run unchanged.** Workers speak RunPod's worker
+  protocol, so `runpod.serverless.start()` works, either through the
+  dependency-free `zai_serverless` module (mounted into every worker and
+  notebook) or with the real SDK installed.
+- **The hub admits every worker.** It applies the same credit and GPU checks
+  as for a notebook, plus a cap (`serverless.max_gpus` in the catalog) on how
+  many GPUs workers may hold together. With the shipped catalog that is 2, so
+  serverless can never take more than 2 of the 7 slices.
+- **Billing** is per second, at the size's hourly price, from pod creation to
+  deletion. Cold start and idle time count, as on RunPod. The charges show on
+  the owner's account page like a notebook session.
+- **When credit runs out**, queued and running jobs fail with
+  `"Credit ran out."`, the owner's workers stop, and new jobs get 402.
+
+## Using it
+
+**Admin, once per endpoint.** The owner must have started a server once, so
+that their home volume exists.
+
+```bash
+zai endpoint create --owner alice --name echo --size gpu-18 --template pytorch \
+    --dir endpoints/echo --max-workers 1 --idle-timeout 60
+```
+
+**Customer.** Write and test the handler in a notebook or terminal, then call
+it from anywhere:
+
+```python
+# ~/endpoints/echo/handler.py
+import zai_serverless as runpod          # or `import runpod` after pip install runpod
+
+def handler(job):
+    return {"echo": job["input"]}
+
+runpod.serverless.start({"handler": handler})
+```
+
+```bash
+python handler.py --test_input '{"input": {"hi": 1}}'   # runs once, locally
+zai run <endpoint> '{"hi": 1}' --sync                    # through the gateway
+curl -H "Authorization: Bearer $TOKEN" -d '{"input": {"hi": 1}}' https://<host>/v2/<endpoint>/runsync
+```
+
+**What handlers can do:**
+
+- Sync, async and generator handlers. With a generator, each yield is
+  streamed and read with `GET /v2/<endpoint>/stream/<job>`.
+- Return `{"error": "..."}` to fail the job.
+- Return `{"refresh_worker": true}` to get a fresh worker for the next job.
+- `/runsync` waits up to 90 s, below Cloudflare's ~120 s limit. After that it
+  returns the job id with `IN_QUEUE`/`IN_PROGRESS`; poll `/status/<job>`.
+
+## Data handling
+
+- **Input is checked before it is stored.** It must be UTF-8 JSON without
+  NaN/Infinity, at most 10 MB, with only `input` and `policy` allowed at the
+  top level. `webhook` is refused rather than silently ignored.
+- **Endpoint settings are checked too.** Size and template must exist and
+  fit together, the working directory must stay inside the owner's home, the
+  command must be one line, environment variables must have valid names (and
+  reserved names are refused), and timeouts must fall within fixed limits.
+- **Results are size-limited.** Over 20 MB, the job fails with a clear error.
+- **Retention.** A job's input, output and stream are deleted 30 minutes
+  after it finishes (1 minute for `/runsync`), as on RunPod. Queued jobs
+  expire after their `ttl` (default 24 h). Stopped workers' records go after
+  a day.
+- **No tokens are stored.** Customer tokens are checked with the hub and
+  cached in memory, keyed by hash. Worker secrets are stored as SHA-256
+  hashes. Environment variable values are never returned by the API, only
+  their names.
+- **Logs** record request paths and status codes, never job inputs or
+  outputs.
+- **Money records stay.** Charges are rows in the hub's ledger, like
+  notebook sessions, and are kept.
+
+## Tested
+
+The suite ran the real hub (with the platform module), the real gateway and
+real worker processes, with a fake Kubernetes API that runs each pod as a
+local process. 47 checks, plus the `zai` commands, passed:
+
+- **Validation:** of input and endpoints.
+- **Running jobs:** cold start, warm `/runsync`, handler errors, streaming,
+  and an **unmodified runpod-python 1.12.0 handler**.
+- **Timeouts and cancellation:** execution timeout (the worker is killed),
+  cancelling queued and running jobs.
+- **Sharing the GPU with notebooks:** a GPU job waits while a notebook holds
+  the slice and runs once it is freed. A notebook is refused while a worker
+  holds it.
+- **Workers and billing:** idle workers are reaped, charges posted, the stop
+  when credit runs out, the 402.
+- **Data:** results purged after their TTL, no tokens in the database,
+  orphaned pods removed.
+
+Not yet run on the real cluster: the network policies, an actual GPU worker,
+and cold-start times.
+
+## Deploying
+
+1. Run `scripts/05-jupyterhub.sh`. It registers the gateway as a hub service
+   (the chart generates its token) and routes `/v2/`.
+2. Run `scripts/12-serverless.sh`. It builds the gateway image and creates
+   the runtime ConfigMap, the gateway, its permissions and its network
+   policies.
+
+Nothing uses the GPU until an endpoint gets a job.
+
+## Not in the MVP
+
+- **Webhooks.** Clients poll `/status` instead.
+- **Warm workers.** Nothing is kept running when there are no jobs.
+- **Pre-emption.** Notebooks are protected by `max_gpus` instead.
+- **Load-balanced endpoints.**
+- **Customers creating their own endpoints.**
+- **A model cache with its own quota.**
+- **Custom images.**
+
+These are phases 2–3 below.
+
+## Research: what RunPod Serverless is
 
 There are two endpoint types ([overview](https://docs.runpod.io/serverless/overview)):
 
