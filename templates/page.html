@@ -221,6 +221,7 @@
   .z-rules li::before { content: ""; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--z-gold); transform: translateY(-2px); }
   .z-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 1.1rem; counter-reset: step; }
   .z-steps li { display: grid; grid-template-columns: 1.75rem 1fr; gap: .85rem; font-size: .9rem; line-height: 1.5; }
+  .z-steps li > div { min-width: 0; }   /* one cell per step; lets .z-pre scroll instead of widening the page */
   .z-steps li::before { counter-increment: step; content: counter(step); font-family: var(--z-mono); font-size: .8rem; font-weight: 500; color: var(--z-gold-deep); border: 1px solid var(--z-line-strong); border-radius: 50%; width: 1.6rem; height: 1.6rem; display: grid; place-items: center; }
   [data-bs-theme="dark"] .z-steps li::before { color: var(--z-gold); }
   .z-steps strong { display: block; font-weight: 600; margin-bottom: .1rem; }
@@ -265,7 +266,7 @@
   }
 
   /* ---- page shell for signed-in pages (spawn / home / authorize) ---- */
-  .z-page { max-width: 60rem; margin: clamp(1.5rem, 4vh, 3rem) auto; padding-inline: 16px; display: grid; gap: 1.5rem; }
+  .z-page { max-width: 60rem; margin: clamp(1.5rem, 4vh, 3rem) auto; padding-inline: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }   /* minmax: a wide table scrolls in its .z-table-wrap instead of widening the page */
   .z-page-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 1rem; }
   .z-page-head h1 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 600; margin: .25rem 0 0; }
   .z-page-head p { margin: .35rem 0 0; color: var(--z-muted); max-width: 60ch; }
@@ -306,6 +307,10 @@
   .z-table tr:last-child td { border-bottom: 0; }
   .z-table .actions { display: flex; gap: .5rem; justify-content: flex-end; flex-wrap: wrap; }
   .z-table-wrap { overflow-x: auto; }
+  /* JupyterHub's own token and admin tables have no scroll wrapper. */
+  @media (max-width: 640px) {
+    #api-tokens-table, #oauth-clients-table, table.table-bordered.table-hover { display: block; overflow-x: auto; }
+  }
   .z-empty { color: var(--z-muted); font-size: .9rem; margin: 0; }
 
   /* ---- usage (admin) ---- */

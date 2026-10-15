@@ -292,9 +292,10 @@ class Hub:
         self._auth[key] = (now + AUTH_CACHE, model)
         return model
 
-    async def open_worker(self, worker, user, size, endpoint):
+    async def open_worker(self, worker, user, size, endpoint, name=""):
         return await self._call("POST", "/zai/workers/open", HUB_TOKEN,
-                                {"worker": worker, "user": user, "size": size, "endpoint": endpoint})
+                                {"worker": worker, "user": user, "size": size, "endpoint": endpoint,
+                                 "endpoint_name": name})
 
     async def close_worker(self, worker):
         return await self._call("POST", "/zai/workers/close", HUB_TOKEN, {"worker": worker})
@@ -556,7 +557,7 @@ class Gateway:
     async def start_worker(self, ep):
         wid = f"{ep['id']}-{_rand(6)}"
         try:
-            await self.hub.open_worker(wid, ep["owner"], ep["size"], ep["id"])
+            await self.hub.open_worker(wid, ep["owner"], ep["size"], ep["id"], ep["name"])
         except HubError as e:
             self.db.x("UPDATE endpoints SET last_error=? WHERE id=?", (str(e)[:300], ep["id"]))
             if e.code == 402:

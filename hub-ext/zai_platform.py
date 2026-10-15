@@ -338,6 +338,12 @@ def availability(con):
     return {res: max(0, cap - gpus_in_use(con, res)) for res, cap in CATALOG.pools.items()}
 
 
+def _endpoint_label(body):
+    """What a worker session shows as: its endpoint's name, else its id."""
+    name = " ".join(str(body.get("endpoint_name", "")).split())[:48]
+    return name or str(body.get("endpoint", ""))[:64]
+
+
 def _dur(secs):
     m = int(secs // 60)
     if m < 1:
@@ -356,6 +362,8 @@ def _close_sessions(con, username, server, stopped, now):
         if cost > 0:
             size = CATALOG.size(r["size"])
             label = size["name"] if size else (r["size"] or r["profile"])
+            if r["kind"] == "worker":
+                label = f"Serverless {r['template']} · {label}"
             con.execute(
                 "INSERT INTO ledger(username, micros, kind, note, actor, session_id, ts) VALUES (?,?,?,?,?,?,?)",
                 (username, -cost, "usage", f"{label} · {_dur(end - r['started'])}", "system", r["id"], now))
@@ -674,7 +682,7 @@ class UsageHandler(BaseHandler):
 
         with _db() as con:
             rows = con.execute(
-                "SELECT username, server, profile, size, gpu, started, stopped FROM sessions "
+                "SELECT username, server, profile, size, gpu, kind, started, stopped FROM sessions "
                 "WHERE stopped IS NULL OR stopped >= ? ORDER BY started DESC", (since,)).fetchall()
 
         per_user, recent = {}, []
@@ -693,7 +701,8 @@ class UsageHandler(BaseHandler):
             if len(recent) < 50:
                 recent.append({"username": r["username"],
                                "profile": _size_name(r["size"]) if r["size"] else r["profile"],
-                               "gpu": bool(r["gpu"]), "started": r["started"], "stopped": r["stopped"],
+                               "gpu": bool(r["gpu"]), "worker": r["kind"] == "worker",
+                               "started": r["started"], "stopped": r["stopped"],
                                "secs": end - r["started"], "running": r["stopped"] is None})
 
         users = sorted(per_user.values(), key=lambda u: (-u["gpu_secs"], -u["cpu_secs"], u["username"]))
@@ -890,7 +899,7 @@ class WorkerOpenAPI(_WorkerAPI):
                 "INSERT INTO sessions(username, server, profile, gpu, started, kind, size, template,"
                 " resource, gpus, rate) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (name, server, size["name"], int(bool(size["gpu"])), now, "worker", size["slug"],
-                 str(body.get("endpoint", ""))[:64],
+                 _endpoint_label(body),
                  size["gpu"]["pool"] if size["gpu"] else "",
                  size["gpu"]["count"] if size["gpu"] else 0, rate))
         self.log.info("billing: worker %s opened for %s (%s)", worker, name, size["slug"])

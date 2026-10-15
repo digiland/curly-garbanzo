@@ -65,7 +65,7 @@
           {% for s in recent %}
           <tr>
             <td><strong>{{ s.username }}</strong></td>
-            <td>{{ s.profile or '—' }}{% if s.gpu %} <span class="z-pill">GPU</span>{% endif %}</td>
+            <td>{{ s.profile or '—' }}{% if s.gpu %} <span class="z-pill">GPU</span>{% endif %}{% if s.worker %} <span class="z-pill">Serverless</span>{% endif %}</td>
             <td>{{ when(s.started) }}</td>
             <td>{% if s.running %}<span class="z-pill is-ok">running</span>{% else %}{{ when(s.stopped) }}{% endif %}</td>
             <td class="num">{{ dur(s.secs) }}</td>

@@ -82,18 +82,18 @@
   <section class="z-card" id="connect">
     <h2>Use it from your own machine</h2>
     <ol class="z-steps">
-      <li><strong>Make an API token</strong> at <a href="{{ base_url }}token">API tokens</a>. Treat it like a password: it can start servers that spend your credit.</li>
-      <li><strong>Get the command-line tool</strong> (Python 3, nothing else to install):
+      <li><div><strong>Make an API token</strong> on the <a href="{{ base_url }}token">API tokens</a> page. Treat it like a password: it can start servers that spend your credit.</div></li>
+      <li><div><strong>Get the command-line tool</strong> (Python 3, nothing else to install):
         <div class="z-pre">curl -fsSLo zai https://{{ public_host }}{{ base_url }}zai/cli &amp;&amp; chmod +x zai
 ./zai login https://{{ public_host }}
 ./zai sizes
-./zai start --size {{ catalog.default_size.slug }} --wait</div></li>
-      <li><strong>SSH, scp, VS Code Remote-SSH.</strong> Add your public key to <code>~/.ssh/authorized_keys</code> on your server, then:
+./zai start --size {{ catalog.default_size.slug }} --wait</div></div></li>
+      <li><div><strong>SSH, scp, VS Code Remote-SSH.</strong> Add your public key to <code>~/.ssh/authorized_keys</code> on your server, then:
         <div class="z-pre">./zai ssh-config &gt;&gt; ~/.ssh/config
-ssh zai</div></li>
-      <li><strong>Reach a port.</strong> Anything listening inside your server, on port 8000 say, is at
+ssh zai</div></div></li>
+      <li><div><strong>Reach a port.</strong> Anything listening inside your server, on port 8000 say, is at
         <div class="z-pre">https://{{ public_host }}/user/{{ user.name }}/proxy/8000/</div>
-        Your browser login works there. From code, send <code>Authorization: Bearer &lt;token&gt;</code>; OpenAI-compatible clients accept the token as their API key. Nobody without a token for your account can reach it.</li>
+        Your browser login works there. From code, send <code>Authorization: Bearer &lt;token&gt;</code>; OpenAI-compatible clients accept the token as their API key. Nobody without a token for your account can reach it.</div></li>
     </ol>
   </section>
 </div>
