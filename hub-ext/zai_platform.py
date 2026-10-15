@@ -36,6 +36,7 @@ from jupyterhub import orm
 from jupyterhub.apihandlers.base import APIHandler
 from jupyterhub.handlers.base import BaseHandler
 from kubespawner import KubeSpawner
+from kubernetes_asyncio.client.models import V1EnvVar
 from tornado import web
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 
@@ -50,7 +51,8 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 def to_micros(amount):
     """Currency amount (str/int/float, e.g. "12.50") -> integer micros."""
     s = str(amount).strip()
-    if not re.match(r"^-?\d+(\.\d{1,6})?$", s):
+    # At most 9,999,999.999999: larger values overflow SQLite's integers.
+    if not re.match(r"^-?\d{1,7}(\.\d{1,6})?$", s):
         raise ValueError(f"not an amount: {amount!r}")
     neg = s.startswith("-")
     whole, _, frac = s.lstrip("-").partition(".")
@@ -390,6 +392,29 @@ class ZaiSpawner(KubeSpawner):
         tpl = tpl or next((t for t in allowed if t["default"]), allowed[0])
         rate = 0 if (self.user.admin and CATALOG.admins_free) else size["rate"]
         return size, tpl, rate
+
+    def options_from_query(self, query_data):
+        # JupyterHub starts a server straight from /hub/spawn?profile=...; that
+        # is a GET, which has no XSRF check, so any site could start a billed
+        # GPU server for a logged-in visitor. Starts come from the form or API.
+        raise web.HTTPError(400, "Servers are started from this page, not from a link. Choose a size below.")
+
+    async def get_pod_manifest(self):
+        """A pod without a GPU must not see one. The nvidia runtime attaches
+        whatever NVIDIA_VISIBLE_DEVICES names, the CUDA images set it to
+        "all", and the device plugin only overrides it for pods it gave a GPU:
+        a CPU-only server would otherwise see every MIG slice on the node."""
+        pod = await super().get_pod_manifest()
+        limits = {}
+        for ctr in pod.spec.containers:
+            limits.update((ctr.resources.limits or {}) if ctr.resources else {})
+        if not any(k.startswith("nvidia.com/") for k in limits):
+            pod.spec.runtime_class_name = None
+            for ctr in pod.spec.containers + (pod.spec.init_containers or []):
+                env = [e for e in (ctr.env or []) if e.name != "NVIDIA_VISIBLE_DEVICES"]
+                env.append(V1EnvVar(name="NVIDIA_VISIBLE_DEVICES", value="void"))
+                ctr.env = env
+        return pod
 
     async def start(self):
         size, tpl, rate = self._zai_choice()
@@ -1154,4 +1179,5 @@ def configure(c):
 
     scopes = dict(c.JupyterHub.get("custom_scopes", {}) or {})
     scopes[WORKER_SCOPE] = {"description": "Open, close and bill serverless GPU workers (the gateway only)."}
+    scopes["custom:serverless"] = {"description": "Call your serverless endpoints (/v2/) as yourself."}
     c.JupyterHub.custom_scopes = scopes

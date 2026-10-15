@@ -76,9 +76,13 @@ DEFAULT_TTL = _env("DEFAULT_JOB_TTL", 86400, int)           # queued jobs expire
 MAX_INPUT = _env("MAX_INPUT_BYTES", 10 * 1024 * 1024, int)
 MAX_OUTPUT = _env("MAX_OUTPUT_BYTES", 20 * 1024 * 1024, int)
 MAX_QUEUE = _env("MAX_QUEUE_PER_ENDPOINT", 1000, int)
+MAX_STREAM = _env("MAX_STREAM_BYTES", MAX_OUTPUT, int)          # per job, all chunks together
+MAX_STORED = _env("MAX_STORED_BYTES_PER_OWNER", 500 * 1024 * 1024, int)   # outputs + streams kept
 LONG_POLL = _env("LONG_POLL_SECONDS", 20, int)
 CREDIT_EVERY = _env("CREDIT_CHECK_SECONDS", 15, int)
 AUTH_CACHE = _env("AUTH_CACHE_SECONDS", 60, int)
+
+INVOKE_SCOPE = "custom:serverless"     # granted to the user role (charts/jupyterhub-values.yaml)
 
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT")
 EP_RE = re.compile(r"^[a-z0-9]{12}$")
@@ -112,6 +116,15 @@ def _unstartable(pod):
         if reason in UNSTARTABLE:
             return reason
     return None
+
+
+def _int_arg(handler, name, default):
+    v = handler.get_argument(name, None)
+    if v is None:
+        return default
+    if not re.fullmatch(r"\d{1,9}", v):
+        raise web.HTTPError(400, reason=f"{name}: a whole number")
+    return int(v)
 
 
 def _sha(s):
@@ -176,6 +189,7 @@ class Store:
                 purge_at REAL);
             CREATE INDEX IF NOT EXISTS ix_jobs_queue ON jobs(endpoint, status, created);
             CREATE INDEX IF NOT EXISTS ix_jobs_purge ON jobs(purge_at);
+            CREATE INDEX IF NOT EXISTS ix_jobs_owner ON jobs(owner);
             CREATE TABLE IF NOT EXISTS stream (
                 job TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
                 seq INTEGER NOT NULL, chunk TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0,
@@ -238,12 +252,16 @@ class K8s:
         await self.req("DELETE", f"/api/v1/namespaces/{NAMESPACE}/pods/{name}?gracePeriodSeconds={grace}",
                        ok=(200, 202, 404))
 
-    async def pvc_exists(self, name):
-        try:
-            await self.req("GET", f"/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/{name}")
-            return True
-        except RuntimeError:
-            return False
+    async def home_pvc(self, owner):
+        """The owner's home volume, found by the annotation KubeSpawner puts on
+        it. Not f"claim-{owner}": KubeSpawner hashes some usernames (abc- ->
+        claim-abc---2211b74f), so a user registered as that hashed form would
+        otherwise get the other person's home mounted."""
+        d = await self.req("GET", f"/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims")
+        names = sorted(p["metadata"]["name"] for p in d.get("items", [])
+                       if (p["metadata"].get("annotations") or {}).get("hub.jupyter.org/username") == owner
+                       and not p["metadata"].get("deletionTimestamp"))
+        return names[0] if len(names) == 1 else None
 
 
 class HubError(Exception):
@@ -286,7 +304,12 @@ class Hub:
             raise
         if u.get("kind", "user") != "user" or not u.get("name"):
             return None
-        model = {"name": u["name"], "admin": bool(u.get("admin"))}
+        # Only tokens carrying the serverless scope: a user's own API tokens
+        # inherit it from the user role, but OAuth tokens that a shared server
+        # or app receives for its visitors do not -- else alice, sharing her
+        # server with bob, could call bob's endpoints with his token.
+        model = {"name": u["name"], "admin": bool(u.get("admin")),
+                 "serverless": INVOKE_SCOPE in (u.get("scopes") or [])}
         if len(self._auth) > 10000:
             self._auth.clear()
         self._auth[key] = (now + AUTH_CACHE, model)
@@ -388,8 +411,10 @@ class Gateway:
         need(isinstance(env, dict) and len(env) <= 50, "env: an object of up to 50 variables")
         for k, v in env.items():
             need(isinstance(k, str) and ENV_RE.match(k), f"env name {k!r}: A-Z, 0-9, _")
-            need(not k.startswith(("RUNPOD_", "ZAI_")) and k not in ("HOME", "PATH", "PYTHONPATH"),
-                 f"env {k} is reserved")
+            # NVIDIA_*/CUDA_*: device selection (NVIDIA_VISIBLE_DEVICES=all would
+            # reach other tenants' MIG slices). LD_*: loader hijacking.
+            need(not k.startswith(("RUNPOD_", "ZAI_", "NVIDIA_", "CUDA_", "LD_"))
+                 and k not in ("HOME", "PATH", "PYTHONPATH"), f"env {k} is reserved")
             need(isinstance(v, str) and len(v) <= 4096 and "\x00" not in v, f"env {k}: a string up to 4096 chars")
         mw = b.get("max_workers", 1)
         need(isinstance(mw, int) and 1 <= mw <= self.catalog.max_workers,
@@ -414,6 +439,12 @@ class Gateway:
 
     # ---- jobs ----------------------------------------------------------
 
+    def stored_bytes(self, owner):
+        out = self.db.one("SELECT COALESCE(SUM(LENGTH(output)),0) FROM jobs WHERE owner=?", (owner,))[0]
+        st = self.db.one("SELECT COALESCE(SUM(LENGTH(s.chunk)),0) FROM stream s JOIN jobs j ON j.id=s.job "
+                         "WHERE j.owner=?", (owner,))[0]
+        return out + st
+
     def submit(self, ep, body, sync):
         if not isinstance(body, dict):
             raise web.HTTPError(400, reason="body must be a JSON object")
@@ -436,7 +467,7 @@ class Gateway:
                 raise web.HTTPError(400, reason=f"policy.{key}: {lo * 1000}-{hi * 1000} ms")
             return math.ceil(v / 1000)
 
-        exec_to = ms("executionTimeout", ep["exec_timeout"], 1, 86400)
+        exec_to = min(ms("executionTimeout", ep["exec_timeout"], 1, 86400), ep["exec_timeout"])
         ttl = ms("ttl", DEFAULT_TTL, 10, 7 * 86400)
         queued = self.db.one("SELECT COUNT(*) FROM jobs WHERE endpoint=? AND status='IN_QUEUE'", (ep["id"],))[0]
         if queued >= MAX_QUEUE:
@@ -478,7 +509,7 @@ class Gateway:
 
     # ---- workers -------------------------------------------------------
 
-    def pod_spec(self, ep, wid, secret):
+    def pod_spec(self, ep, wid, secret, pvc):
         size = self.catalog.sizes[ep["size"]]
         tpl = self.catalog.templates[ep["template"]]
         gpu = size.get("gpu")
@@ -539,7 +570,7 @@ class Gateway:
                     ],
                 }],
                 "volumes": [
-                    {"name": "home", "persistentVolumeClaim": {"claimName": f"claim-{ep['owner']}"}},
+                    {"name": "home", "persistentVolumeClaim": {"claimName": pvc}},
                     {"name": "runtime", "configMap": {"name": RUNTIME_CONFIGMAP}},
                     {"name": "shared", "hostPath": {"path": SHARED_DATASETS, "type": "DirectoryOrCreate"}},
                     {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": "2Gi"}},
@@ -547,15 +578,31 @@ class Gateway:
                 ],
             },
         }
-        rc = size.get("runtime_class") or RUNTIME_CLASS
-        if rc:
-            spec["spec"]["runtimeClassName"] = rc
+        if size.get("gpu"):
+            rc = size.get("runtime_class") or RUNTIME_CLASS
+            if rc:
+                spec["spec"]["runtimeClassName"] = rc
+        else:
+            # Without a GPU, no nvidia runtime and no devices: the images set
+            # NVIDIA_VISIBLE_DEVICES=all, which would expose every MIG slice.
+            for c in spec["spec"]["containers"]:
+                c["env"] = [e for e in c["env"] if e["name"] != "NVIDIA_VISIBLE_DEVICES"] + \
+                    [{"name": "NVIDIA_VISIBLE_DEVICES", "value": "void"}]
         if size.get("node_selector"):
             spec["spec"]["nodeSelector"] = size["node_selector"]
         return spec
 
     async def start_worker(self, ep):
         wid = f"{ep['id']}-{_rand(6)}"
+        try:
+            pvc = await self.k8s.home_pvc(ep["owner"])
+        except Exception as e:
+            log.warning("looking up %s's home volume: %s", ep["owner"], e)
+            return None
+        if not pvc:
+            self.db.x("UPDATE endpoints SET last_error=? WHERE id=?",
+                      (f"{ep['owner']} has no home volume (or more than one)", ep["id"]))
+            return None
         try:
             await self.hub.open_worker(wid, ep["owner"], ep["size"], ep["id"], ep["name"])
         except HubError as e:
@@ -574,7 +621,7 @@ class Gateway:
         self.db.x("INSERT INTO workers(id, endpoint, owner, secret_hash, state, created, last_active, session_open)"
                   " VALUES (?,?,?,?,?,?,?,1)", (wid, ep["id"], ep["owner"], _sha(secret), "starting", now, now))
         try:
-            await self.k8s.create_pod(self.pod_spec(ep, wid, secret))
+            await self.k8s.create_pod(self.pod_spec(ep, wid, secret, pvc))
         except Exception as e:
             log.error("pod create failed for %s: %s", wid, e)
             self.db.x("UPDATE endpoints SET last_error=? WHERE id=?", (f"pod create failed: {e}"[:300], ep["id"]))
@@ -604,8 +651,8 @@ class Gateway:
     def worker_gone(self, w, why):
         """A worker's pod no longer runs: requeue or fail its job, mark it gone."""
         for j in self.db.q("SELECT id, retries FROM jobs WHERE worker=? AND status='IN_PROGRESS'", (w["id"],)):
-            if w["stop_reason"] in ("timeout", "cancelled", "credit"):
-                continue                       # already finished by whoever stopped it
+            # The job that caused a timeout/cancel/credit stop is already
+            # terminal, so not selected here; any others (batch) still need it.
             if j["retries"] < 1:
                 self.db.x("UPDATE jobs SET status='IN_QUEUE', started=NULL, worker=NULL, retries=retries+1 "
                           "WHERE id=?", (j["id"],))
@@ -641,6 +688,15 @@ class Gateway:
                 self.db.x("UPDATE endpoints SET last_error=? WHERE id=?", (why[:300], w["endpoint"]))
                 for j in self.db.q("SELECT id FROM jobs WHERE endpoint=? AND status='IN_QUEUE'", (w["endpoint"],)):
                     self.finish_job(j["id"], "FAILED", error=why)
+        # A stop whose pod delete failed (API hiccup) would leave the owner's
+        # code holding the GPU, unbilled after the credit stop: retry it.
+        for w in self.db.q("SELECT id FROM workers WHERE state='stopping'"):
+            p = pods.get(w["id"])
+            if p is not None and not p["metadata"].get("deletionTimestamp"):
+                try:
+                    await self.k8s.delete_pod(f"sw-{w['id']}")
+                except Exception as e:
+                    log.warning("retrying delete of sw-%s: %s", w["id"], e)
         known = {r["id"] for r in self.db.q("SELECT id FROM workers WHERE state!='gone'")}
         for wid, p in pods.items():
             if wid not in known and not p["metadata"].get("deletionTimestamp"):
@@ -739,18 +795,39 @@ class Base(web.RequestHandler):
     client (or a worker posting a result) sees as a network error and retries."""
 
     LIMIT = MAX_INPUT
+    AUTH_FIRST = True       # customers: check the token before reading a byte of body
 
     def initialize(self, gw, via_hub=False):
         self.gw = gw
         self.via_hub = via_hub
         self._chunks, self._size, self._too_big = [], 0, False
+        self._user = None
+        self._refused = None
 
-    def prepare(self):
+    async def prepare(self):
         n = self.request.headers.get("Content-Length")
         if n and n.isdigit() and int(n) > self.LIMIT:
             self._too_big = True
+        if self.AUTH_FIRST:
+            # Bodies are streamed in after prepare(): without this, anyone could
+            # make the gateway buffer 10 MB per connection before being refused.
+            try:
+                self._user = await self.user()
+            except web.HTTPError as e:
+                if self._too_big:
+                    raise
+                # Answering before the body is read makes tornado close the
+                # connection mid-upload; the hub proxy then sees ECONNRESET and
+                # serves its own 503 page. Discard the body, then refuse.
+                self._refused = e
+                setattr(self, self.request.method.lower(), self._refuse)
+
+    async def _refuse(self, *args, **kwargs):
+        raise self._refused
 
     def data_received(self, chunk):
+        if self._refused:
+            return
         self._size += len(chunk)
         if self._size > self.LIMIT:
             self._too_big = True
@@ -768,7 +845,10 @@ class Base(web.RequestHandler):
         self.set_header("Cache-Control", "no-store")
 
     def write_error(self, status, **kw):
-        self.finish({"error": self._reason, "status": status})
+        # Tornado puts only a safe subset of the reason in the status line
+        # ("Unknown" otherwise); the JSON body carries the full message.
+        exc = (kw.get("exc_info") or (None, None, None))[1]
+        self.finish({"error": getattr(exc, "reason", None) or self._reason, "status": status})
 
     def body_json(self):
         raw = self.raw_body()
@@ -778,6 +858,8 @@ class Base(web.RequestHandler):
             raise web.HTTPError(400, reason=f"invalid JSON: {e}")
 
     async def user(self):
+        if self._user is not None:
+            return self._user
         if self.via_hub:
             return self.hub_user()
         h = self.request.headers.get("Authorization", "")
@@ -790,6 +872,8 @@ class Base(web.RequestHandler):
             raise web.HTTPError(503, reason="cannot verify the token right now")
         if not u:
             raise web.HTTPError(401, reason="token rejected")
+        if not u["serverless"]:
+            raise web.HTTPError(403, reason=f"this token lacks the {INVOKE_SCOPE} scope; make one at /hub/token")
         return u
 
     def hub_user(self):
@@ -842,7 +926,7 @@ class EndpointsHandler(Base):
             e = self.gw.validate_endpoint(self.body_json())
         except ValueError as ex:
             raise web.HTTPError(400, reason=str(ex))
-        if not await self.gw.k8s.pvc_exists(f"claim-{e['owner']}"):
+        if not await self.gw.k8s.home_pvc(e["owner"]):
             raise web.HTTPError(400, reason=f"{e['owner']} has no home volume yet: they must start a server once")
         ep_id = _rand(12)
         self.gw.db.x("INSERT INTO endpoints(id, owner, name, size, template, workdir, command, env, max_workers,"
@@ -875,7 +959,7 @@ class RunHandler(Base):
         job_id = self.gw.submit(ep, self.body_json(), sync=(mode == "runsync"))
         if mode == "run":
             return self.finish({"id": job_id, "status": "IN_QUEUE"})
-        wait = min(RUNSYNC_WAIT, max(1, int(self.get_argument("wait", str(RUNSYNC_WAIT * 1000))) // 1000))
+        wait = min(RUNSYNC_WAIT, max(1, _int_arg(self, "wait", RUNSYNC_WAIT * 1000) // 1000))
         ev = self.gw._event(self.gw.job_events, job_id)
         try:
             await asyncio.wait_for(ev.wait(), timeout=wait)
@@ -979,6 +1063,7 @@ class Healthz(web.RequestHandler):
 
 class WorkerBase(Base):
     LIMIT = MAX_OUTPUT
+    AUTH_FIRST = False      # workers authenticate with their own secret, per request
 
     def worker(self, wid):
         w = self.gw.db.one("SELECT * FROM workers WHERE id=?", (wid,)) if WORKER_RE.match(wid) else None
@@ -995,7 +1080,7 @@ class JobTakeHandler(WorkerBase):
         w = self.worker(wid)
         limit = 1
         if kind == "job-take-batch":
-            limit = max(1, min(16, int(self.get_argument("batch_size", "1"))))
+            limit = max(1, min(16, _int_arg(self, "batch_size", 1)))
         deadline = time.time() + LONG_POLL
         while True:
             jobs = self.gw.take(w, limit)
@@ -1047,7 +1132,21 @@ class JobDoneHandler(WorkerBase):
             raise web.HTTPError(400, reason="result must be an object")
         if j["status"] != "IN_PROGRESS":
             return self.finish({"ignored": True})     # cancelled or timed out meanwhile
+        size = len(self.raw_body())
+        if self.gw.stored_bytes(j["owner"]) + size > MAX_STORED:
+            # One owner must not fill the disk every endpoint's queue lives on.
+            self.gw.finish_job(job_id, "FAILED", error=f"over {MAX_STORED} bytes of results kept for this "
+                                                        "account; fetch or let older results expire")
+            self.gw.db.x("UPDATE workers SET state='idle', last_active=? WHERE id=? AND state='busy'",
+                         (time.time(), wid))
+            raise web.HTTPError(413, reason="account result storage full")
         if kind == "job-stream" or self.get_argument("isStream", "false") == "true":
+            streamed = self.gw.db.one("SELECT COALESCE(SUM(LENGTH(chunk)),0) FROM stream WHERE job=?", (job_id,))[0]
+            if streamed + size > MAX_STREAM:
+                self.gw.finish_job(job_id, "FAILED", error=f"stream over {MAX_STREAM} bytes")
+                self.gw.db.x("UPDATE workers SET state='idle', last_active=? WHERE id=? AND state='busy'",
+                             (time.time(), wid))
+                raise web.HTTPError(413, reason="stream too large")
             if "output" in res:
                 seq = self.gw.db.one("SELECT COALESCE(MAX(seq),0)+1 FROM stream WHERE job=?", (job_id,))[0]
                 self.gw.db.x("INSERT INTO stream(job, seq, chunk) VALUES (?,?,?)", (job_id, seq, compact(res["output"])))

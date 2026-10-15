@@ -17,7 +17,9 @@ chmod 700 "$ssh_dir"
 # start would trip "REMOTE HOST IDENTIFICATION HAS CHANGED" for every user.
 [ -f "$ssh_dir/zai_host_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C "zai-host" -f "$ssh_dir/zai_host_ed25519"
 touch "$ssh_dir/authorized_keys"
-chmod 600 "$ssh_dir/authorized_keys"
+# Kubernetes' fsGroup handling can add group rw to everything on the volume;
+# sshd refuses a host key that is not private, so tighten it every start.
+chmod 600 "$ssh_dir/authorized_keys" "$ssh_dir/zai_host_ed25519"
 # StrictModes refuses keys under a group/world-writable home.
 chmod go-w "$HOME" 2>/dev/null || true
 
@@ -32,6 +34,10 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
 PermitRootLogin no
+# The home volume is created root-owned and world-writable (local-path), which
+# the user cannot change, so StrictModes would refuse every key. Only one user
+# (uid 1000) exists in this container; ~/.ssh is 700 and the key file 600.
+StrictModes no
 AllowUsers $(id -un)
 PidFile none
 PrintMotd no

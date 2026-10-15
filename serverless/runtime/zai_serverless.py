@@ -40,6 +40,14 @@ def _url(name, job_id=None):
     return u
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):
+        return None             # a redirect would carry the worker secret elsewhere
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _request(method, url, body=None, timeout=60):
     data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
@@ -47,7 +55,7 @@ def _request(method, url, body=None, timeout=60):
         "Content-Type": "application/json",
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             raw = r.read()
             return r.status, raw
     except urllib.error.HTTPError as e:

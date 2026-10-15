@@ -28,7 +28,7 @@ rules:
     verbs: [get, list, create, delete]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [get]
+    verbs: [get, list]               # list: find the owner's home by its username annotation
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -186,3 +186,69 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 129.212.180.103/32]
+---
+# The gateway serves the internet and may create pods. Without this, anyone
+# who took it over could create a privileged pod or one mounting the node's
+# filesystem (= root on the node), or pull any namespace secret into env.
+# Pods it creates must look exactly like workers: no host namespaces, no
+# privilege, no capabilities, non-root, RuntimeDefault seccomp, no API token,
+# no secrets, and only PVC/ConfigMap/emptyDir volumes plus the datasets
+# hostPath read-only. Cluster-scoped; applies to the gateway in any namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: serverless-gateway-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: created-by-the-gateway
+      expression: "request.userInfo.username == 'system:serviceaccount:' + request.namespace + ':serverless-gateway'"
+  validations:
+    - expression: "has(object.metadata.labels) && object.metadata.labels.exists(k, k == 'component') && object.metadata.labels['component'] == 'serverless-worker'"
+      message: "gateway pods must be serverless workers"
+    - expression: "!(has(object.spec.hostNetwork) && object.spec.hostNetwork) && !(has(object.spec.hostPID) && object.spec.hostPID) && !(has(object.spec.hostIPC) && object.spec.hostIPC)"
+      message: "no host namespaces"
+    - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
+      message: "no service account token"
+    - expression: "has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) && object.spec.securityContext.runAsNonRoot && has(object.spec.securityContext.seccompProfile) && object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'"
+      message: "runAsNonRoot and RuntimeDefault seccomp required"
+    - expression: "!has(object.spec.initContainers) && !has(object.spec.ephemeralContainers)"
+      message: "no init or ephemeral containers"
+    - expression: >-
+        object.spec.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation == false
+          && !(has(c.securityContext.privileged) && c.securityContext.privileged)
+          && has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop)
+          && c.securityContext.capabilities.drop.exists(d, d == 'ALL')
+          && !has(c.securityContext.capabilities.add)
+          && !(has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 0))
+      message: "containers must drop all capabilities, without privilege or escalation"
+    - expression: "object.spec.containers.all(c, !has(c.envFrom) && (!has(c.env) || c.env.all(e, !has(e.valueFrom))))"
+      message: "no environment from secrets or other objects"
+    - expression: "object.spec.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort)))"
+      message: "no host ports"
+    - expression: >-
+        !has(object.spec.volumes) || object.spec.volumes.all(v, has(v.persistentVolumeClaim) || has(v.configMap) || has(v.emptyDir)
+          || (has(v.hostPath) && v.hostPath.path == '/srv/jupyter-shared/datasets'))
+      message: "only PVC, ConfigMap, emptyDir and the datasets hostPath"
+    - expression: >-
+        object.spec.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
+          !has(object.spec.volumes) || !object.spec.volumes.exists(v, v.name == m.name && has(v.hostPath))
+          || (has(m.readOnly) && m.readOnly)))
+      message: "the datasets hostPath must be mounted read-only"
+    - expression: "!has(object.spec.runtimeClassName) || object.spec.runtimeClassName == 'nvidia'"
+      message: "runtime class: nvidia or none"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: serverless-gateway-pods
+spec:
+  policyName: serverless-gateway-pods
+  validationActions: [Deny]

@@ -23,6 +23,10 @@ hub:
       scopes:
         - self
         - shares!user
+        # The serverless API (/v2/) accepts only tokens with this scope. Tokens
+        # made at /hub/token inherit it; OAuth tokens handed to shared servers
+        # and apps do not, so those cannot act on the visitor's endpoints.
+        - custom:serverless
     # The serverless gateway (k8s/serverless.yaml) opens, closes and bills GPU
     # workers through /hub/api/zai/workers/*, and may do nothing else. The
     # custom scope is defined by hub-ext/zai_platform.py.
@@ -125,7 +129,9 @@ hub:
       # The username becomes the pod name AND the PVC name, so it has to be a
       # safe DNS label. Without this, signup accepts names that produce an
       # unspawnable server and a confusing failure much later.
-      username_pattern: '^[a-z][a-z0-9-]{2,30}$'
+      # No "--" and no trailing "-": KubeSpawner hashes such names into
+      # forms like abc---2211b74f, which another signup could then claim.
+      username_pattern: '^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,30}$'
   extraConfig:
     # JupyterHub 5.5's LoginHandler.render_template intercepts error.html on POST
     # and routes it into _render(**ns). NativeAuthenticator overrides _render(), which
@@ -133,6 +139,33 @@ hub:
     # rendering raises and the user gets a bare, body-less HTTP 403 instead of
     # "Login form invalid or expired. Try again."  Bypass the interception: render
     # error pages through the base implementation, which honours sync=True.
+    01-nativeauth-get-csrf: |
+      # NativeAuthenticator approves, revokes and discards users on a plain
+      # GET (/hub/authorize/<name>, /hub/discard/<name>), which JupyterHub does
+      # not XSRF-check on navigation: a link on any site, opened by a logged-in
+      # admin, would approve the attacker's pending signup. Accept these only
+      # from the hub's own pages (or a URL the admin typed).
+      from nativeauthenticator.handlers import ToggleAuthorizationHandler as _NAToggle, DiscardHandler as _NADiscard
+      from tornado import web as _web
+      from urllib.parse import urlparse as _urlparse
+      def _same_origin_only(cls):
+          _get = cls.get
+          async def get(self, *a, **kw):
+              site = self.request.headers.get("Sec-Fetch-Site")
+              if site is not None:
+                  ok = site in ("same-origin", "none")
+              else:   # older browsers: fall back to Referer
+                  ref = self.request.headers.get("Referer", "")
+                  ok = bool(ref) and _urlparse(ref).netloc == self.request.host
+              if not ok:
+                  raise _web.HTTPError(403, "Use the buttons on the Approve users page.")
+              r = _get(self, *a, **kw)
+              if hasattr(r, "__await__"):
+                  r = await r
+              return r
+          cls.get = get
+      _same_origin_only(_NAToggle)
+      _same_origin_only(_NADiscard)
     01-nativeauth-render-fix: |
       from jupyterhub.handlers.base import BaseHandler as _JHBase
       from nativeauthenticator.handlers import LoginHandler as _NALoginHandler
@@ -243,6 +276,20 @@ proxy:
     type: ClusterIP                 # servicelb is disabled; cloudflared reaches this in-cluster
 
 singleuser:
+  # Notebooks run customer code. The chart's default "any public IP" egress
+  # includes this node's own public address, so the kubelet (10250), the
+  # Kubernetes API (6443) and sshd were reachable from inside a notebook (the
+  # firewall only closes them to the internet). Same rule as serverless
+  # workers and agents: the internet, minus private ranges, cloud metadata
+  # and the node.
+  networkPolicy:
+    egressAllowRules:
+      nonPrivateIPs: false
+    egress:
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 129.212.180.103/32]
   image:
     name: local/pytorch-caimex       # pytorch-notebook + caimex CLI, SSH, port proxy
     tag: cuda12-r3                   # the default; templates in hub-ext/catalog.yaml pick their own
@@ -277,7 +324,14 @@ singleuser:
     AWS_SECRET_ACCESS_KEY:
       valueFrom: {secretKeyRef: {name: object-storage, key: secret-key, optional: true}}
   extraPodConfig:
-    runtimeClassName: nvidia        # required so the MIG device is injected
+    runtimeClassName: nvidia        # required so the MIG device is injected (dropped for CPU-only sizes)
+    # Replaces KubeSpawner's pod securityContext, so fsGroup is repeated. The
+    # runtime's default seccomp profile blocks user namespaces (unshare -Ur)
+    # and other kernel surface customer code has no use for.
+    securityContext:
+      fsGroup: 100
+      fsGroupChangePolicy: OnRootMismatch   # don't re-permission the whole home (incl. ~/.ssh keys) on every start
+      seccompProfile: {type: RuntimeDefault}
   # Shared spaces, mounted into every server. Backed by hostPath because this is
   # a single node -- there is nothing to schedule across, and ReadWriteMany is
   # not available from local-path.

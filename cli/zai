@@ -68,19 +68,41 @@ def load_config():
         cfg["token"] = os.environ["ZAI_TOKEN"]
     if not cfg.get("host") or not cfg.get("token"):
         raise ZaiError("Not logged in. Run: zai login https://<host>")
-    cfg["host"] = cfg["host"].rstrip("/")
+    cfg["host"] = _secure(cfg["host"].rstrip("/"))
     return cfg
 
 
 def save_config(cfg):
-    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    os.makedirs(os.path.dirname(CONFIG), mode=0o700, exist_ok=True)
     fd = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)        # O_CREAT's mode only applies to a new file
     with os.fdopen(fd, "w") as f:
         json.dump(cfg, f, indent=2)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):
+        return None             # urllib would re-send the token to wherever it points
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _secure(url):
+    """The token goes in a header: only over TLS, except to this machine."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme != "https" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise ZaiError(f"{url}: use https:// (the token would travel in clear text)")
+    return url
+
+
+def _redirect_error(e):
+    return ZaiError(f"the server redirected to {e.headers.get('Location')}; "
+                    "use that address with `zai login`") if 300 <= e.code < 400 else None
+
+
 def api(cfg, method, path, body=None):
-    url = cfg["host"] + "/hub/api" + path
+    url = _secure(cfg["host"] + "/hub/api" + path)
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
         "Authorization": "token " + cfg["token"],
@@ -88,10 +110,12 @@ def api(cfg, method, path, body=None):
         "Accept": "application/json",
     })
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with _OPENER.open(req, timeout=60) as r:
             raw = r.read()
             return r.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as e:
+        if _redirect_error(e):
+            raise _redirect_error(e) from None
         raw = e.read()
         try:
             msg = json.loads(raw).get("message") or raw.decode()
@@ -106,15 +130,17 @@ def api(cfg, method, path, body=None):
 
 def gateway(cfg, method, path, body=None, timeout=120):
     """The serverless API, /v2 on the same host, same token."""
-    url = os.environ.get("ZAI_GATEWAY", cfg["host"] + "/v2").rstrip("/") + path
+    url = _secure(os.environ.get("ZAI_GATEWAY", cfg["host"] + "/v2").rstrip("/") + path)
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
         "Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             raw = r.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
+        if _redirect_error(e):
+            raise _redirect_error(e) from None
         raw = e.read()
         try:
             msg = json.loads(raw).get("error") or raw.decode()
