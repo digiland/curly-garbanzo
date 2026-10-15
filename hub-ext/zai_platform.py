@@ -40,6 +40,8 @@ from kubernetes_asyncio.client.models import V1EnvVar
 from tornado import web
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 
+import zai_2fa
+
 DB_PATH = os.environ.get("ZAI_DB", "/srv/jupyterhub/usage.sqlite")
 CATALOG_PATH = os.environ.get("ZAI_CATALOG", "/etc/jupyterhub/zai/catalog.yaml")
 CLI_PATH = os.environ.get("ZAI_CLI", "/etc/jupyterhub/zai/zai")
@@ -772,7 +774,8 @@ class AccountHandler(BaseHandler):
             "account.html", acct=acct, history=history, catalog=CATALOG, free=free,
             money=CATALOG.money, rate_str=CATALOG.rate_str, when=_when, dur=_dur,
             size_name=_size_name, admin_free=user.admin and CATALOG.admins_free,
-            public_host=self.request.host, now=time.time(), sync=False)
+            public_host=self.request.host, now=time.time(), sync=False,
+            two_factor=zai_2fa.enabled(self.db, user.name))
         self.finish(html)
 
 

@@ -259,6 +259,9 @@ hub:
       sys.path.insert(0, "/etc/jupyterhub/zai")
       import zai_platform
       zai_platform.configure(c)
+      # Optional authenticator-app sign-in, /hub/account/2fa (hub-ext/zai_2fa.py).
+      import zai_2fa
+      zai_2fa.configure(c)
 
     04-agents-route: |
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,

@@ -79,6 +79,14 @@
     {% endif %}
   </section>
 
+  <section class="z-card" id="security">
+    <h2>Sign-in security</h2>
+    <p>Two-factor sign-in is {% if two_factor %}<span class="z-pill is-ok">on</span>{% else %}<span class="z-pill">off</span>{% endif %}.
+      {% if two_factor %}Sign-in asks for a code from your authenticator app.{% else %}Add a code from an authenticator app on your phone, so a stolen password isn't enough.{% endif %}</p>
+    <p><a class="z-btn is-sm{% if two_factor %} is-quiet{% endif %}" role="button" href="{{ base_url }}account/2fa">{% if two_factor %}Manage{% else %}Set up two-factor sign-in{% endif %}</a>
+      <a class="z-btn is-sm is-quiet" role="button" href="{{ base_url }}change-password">Change password</a></p>
+  </section>
+
   <section class="z-card" id="connect">
     <h2>Use it from your own machine</h2>
     <ol class="z-steps">
