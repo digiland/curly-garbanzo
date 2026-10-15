@@ -17,6 +17,7 @@ kubectl -n jupyterhub get secret hub -o jsonpath='{.data.hub\.services\.serverle
 echo "==> gateway image -> $TAG"
 docker build -t "$TAG" serverless
 docker save "$TAG" | k3s ctr images import -
+k3s ctr -n k8s.io images label "docker.io/$TAG" io.cri-containerd.pinned=pinned >/dev/null   # exempt from image GC (04-images.sh)
 
 echo "==> worker runtime (zai_serverless.py, mounted into workers and notebooks)"
 kubectl -n jupyterhub create configmap serverless-runtime \

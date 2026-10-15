@@ -95,6 +95,25 @@ def _rand(n):
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
+# Container waiting reasons that retrying will not fix: with pullPolicy Never a
+# missing image stays missing (kubelet's image GC removes unused ones when the
+# disk is full), and a bad spec stays bad.
+UNSTARTABLE = {"ErrImageNeverPull", "ErrImagePull", "ImagePullBackOff", "InvalidImageName",
+               "CreateContainerConfigError", "CreateContainerError", "RunContainerError"}
+
+
+def _unstartable(pod):
+    """The reason a pod will never start, or None."""
+    st = pod.get("status", {})
+    if pod["metadata"].get("deletionTimestamp") or st.get("phase") != "Pending":
+        return None
+    for cs in st.get("containerStatuses") or []:
+        reason = (cs.get("state", {}).get("waiting") or {}).get("reason")
+        if reason in UNSTARTABLE:
+            return reason
+    return None
+
+
 def _sha(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -608,6 +627,17 @@ class Gateway:
                     await self.k8s.delete_pod(f"sw-{w['id']}", grace=0)
                 self.worker_gone(w, "exited" if p is not None else "pod deleted")
                 await self.close_session(w["id"])
+            elif (stuck := _unstartable(p)):
+                # Otherwise it sits until WORKER_START_TIMEOUT, holding a GPU
+                # cap slot and billing its owner, while the jobs never run.
+                why = f"worker could not start: {stuck}"
+                log.warning("worker %s: %s", w["id"], why)
+                await self.k8s.delete_pod(f"sw-{w['id']}", grace=0)
+                self.worker_gone(w, why)
+                await self.close_session(w["id"])
+                self.db.x("UPDATE endpoints SET last_error=? WHERE id=?", (why[:300], w["endpoint"]))
+                for j in self.db.q("SELECT id FROM jobs WHERE endpoint=? AND status='IN_QUEUE'", (w["endpoint"],)):
+                    self.finish_job(j["id"], "FAILED", error=why)
         known = {r["id"] for r in self.db.q("SELECT id FROM workers WHERE state!='gone'")}
         for wid, p in pods.items():
             if wid not in known and not p["metadata"].get("deletionTimestamp"):

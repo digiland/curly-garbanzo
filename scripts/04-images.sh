@@ -60,6 +60,12 @@ else
     # One save of all templates: they share the singleuser layers, which a
     # per-image save would export (and import) again for each.
     [ ${#TPL_TAGS[@]} -gt 0 ] && docker save "${TPL_TAGS[@]}" | k3s ctr images import -
+    # pullPolicy: Never means a deleted image cannot come back by itself, and
+    # kubelet's image GC deletes any image no container is using once the disk
+    # passes 85%. Pinned images are exempt.
+    for tag in "$HUB_TAG" "$SU_TAG" "${TPL_TAGS[@]}"; do
+        k3s ctr -n k8s.io images label "docker.io/$tag" io.cri-containerd.pinned=pinned >/dev/null
+    done
     echo "==> pre-pulling base so first spawn isn't a timeout"
     k3s ctr images pull "$SINGLEUSER_BASE" || true
     k3s ctr images ls | awk '{print $1}' | grep -E 'local/|pytorch-notebook' | sort -u

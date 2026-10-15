@@ -120,8 +120,38 @@ local process. 47 checks, plus the `zai` commands, passed:
 - **Data:** results purged after their TTL, no tokens in the database,
   orphaned pods removed.
 
-Not yet run on the real cluster: the network policies, an actual GPU worker,
-and cold-start times.
+**On the real cluster** (2026-10-15, a staging copy of the hub in namespace
+`zai-staging` on the production node, not exposed through the tunnel), 15
+more checks passed:
+
+- **A real GPU worker:** an H200 MIG 1g.18gb slice, PyTorch on CUDA. The cold
+  start took 5.5 s from the request to the result, with the image already on
+  the node. A warm `/runsync` took 63 ms.
+- **The job lifecycle:** async `/run`, handler errors, execution timeout,
+  cancelling a running job, streaming, an unmodified runpod 1.12.0 handler,
+  `/health`, and refusing a bad token, NaN input and webhooks.
+- **Network policies:** from a worker, only the gateway's worker port, DNS
+  and the internet are reachable. Both hubs, the production proxy, the
+  Kubernetes API, cloud metadata and the node are not.
+- **Billing** with `enforce: true`: a job running when credit hit zero failed
+  within 8 s, its worker was deleted, and new jobs got 402.
+- **The GPU cap:** an endpoint allowing 3 workers got 2. The other jobs
+  waited for a free worker.
+
+Two problems found there, both fixed:
+
+- **Kubelet deleted the worker image.** The node's disk is above kubelet's
+  85% image-GC threshold, so an image that no container is using is deleted,
+  and with `pullPolicy: Never` it cannot come back. The import scripts now pin
+  imported images (`io.cri-containerd.pinned`), which exempts them from GC.
+- **A worker that can never start was kept.** The gateway waited
+  `WORKER_START_TIMEOUT` (15 min), holding a GPU cap slot and billing the
+  owner. It now deletes a pod stuck in an image or container-config error at
+  once, sets the endpoint's `lastError`, and fails its queued jobs with the
+  reason.
+
+Known: after a top-up, new jobs can still get 402 for up to 15 s, until the
+gateway next fetches balances.
 
 ## Deploying
 
