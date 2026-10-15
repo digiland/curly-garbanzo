@@ -6,6 +6,7 @@
 #
 #   internet -> tunnel -> proxy  --/v2/-->  gateway :8080  (customer API, hub tokens)
 #   worker pods                  ------->   gateway :8081  (RunPod worker protocol)
+#   hub (Endpoints page)         ------->   gateway :8082  (the API, on behalf of a logged-in user)
 #   gateway                      ------->   hub /hub/api/zai/workers/* (admission + billing)
 #   gateway                      ------->   Kubernetes API (create/delete worker pods)
 apiVersion: v1
@@ -71,6 +72,7 @@ spec:
         hub.jupyter.org/network-access-hub: "true"   # the hub's NetworkPolicy admits only labelled pods
     spec:
       serviceAccountName: serverless-gateway
+      enableServiceLinks: false     # else Kubernetes injects HUB_PORT=tcp://... and the like
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -83,6 +85,7 @@ spec:
           ports:
             - { name: public, containerPort: 8080 }
             - { name: internal, containerPort: 8081 }
+            - { name: hub, containerPort: 8082 }
           env:
             - name: HUB_API
               value: http://hub:8081/hub/api
@@ -132,9 +135,12 @@ metadata:
   namespace: jupyterhub
 spec:
   selector: { app: serverless-gateway }
-  ports: [{ name: internal, port: 8081, targetPort: 8081 }]
+  ports:
+    - { name: internal, port: 8081, targetPort: 8081 }
+    - { name: hub, port: 8082, targetPort: 8082 }      # the hub's Endpoints page
 ---
-# Public API only from the hub's proxy; worker protocol only from workers.
+# Public API only from the hub's proxy; worker protocol only from workers;
+# the hub port (the API on behalf of a logged-in user) only from the hub.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -151,6 +157,9 @@ spec:
     - from:
         - podSelector: { matchLabels: { component: serverless-worker } }
       ports: [{ port: 8081, protocol: TCP }]
+    - from:
+        - podSelector: { matchLabels: { app: jupyterhub, component: hub } }
+      ports: [{ port: 8082, protocol: TCP }]
 ---
 # Workers run customers' handler code. Nothing may connect to them; they may
 # reach the gateway, DNS and the internet (model downloads), but nothing else

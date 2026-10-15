@@ -9,6 +9,7 @@ came from, kept for the later phases.
 
 ```
 customer --HTTPS--> tunnel --> hub proxy --/v2/--> gateway :8080
+hub /hub/endpoints page ---------------------------> gateway :8082 (hub only)
                                                      | queue (SQLite)
                                                      | admission + billing --> hub /hub/api/zai/workers/*
                                                      | create/delete pods --> Kubernetes API
@@ -49,6 +50,15 @@ that their home volume exists.
 zai endpoint create --owner alice --name echo --size gpu-18 --template pytorch \
     --dir endpoints/echo --max-workers 1 --idle-timeout 60
 ```
+
+**The Endpoints page** (`/hub/endpoints`, in the nav) shows each endpoint's
+URL with copyable curl and Python examples, its queue, workers, spend this
+month and recent jobs (metadata only, never inputs or outputs). Owners can
+send a test job, cancel jobs and empty the queue. Admins see every endpoint
+and can create and delete them there too. The hub renders the page and asks
+the gateway on the user's behalf over a hub-only port (`:8082`, which only the
+hub pod may reach, authenticated by the hub-gateway service token), and the
+gateway applies the same owner-or-admin checks as for an API token.
 
 **Customer.** Write and test the handler in a notebook or terminal, then call
 it from anywhere:

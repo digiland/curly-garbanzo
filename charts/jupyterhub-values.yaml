@@ -60,6 +60,14 @@ hub:
       mountPath: /etc/jupyterhub/zai
       readOnly: true
   extraEnv:
+    # The hub's Endpoints page calls the serverless gateway's hub-only port with
+    # the service token the chart generates for hub.services.serverless.
+    ZAI_GATEWAY_TOKEN:
+      valueFrom:
+        secretKeyRef:
+          name: hub
+          key: hub.services.serverless.apiToken
+          optional: true
     # Optional. When set, users whose signup email matches SELF_APPROVAL_DOMAINS
     # are emailed an approval link instead of waiting on a human. Unset = every
     # signup waits for manual approval at /hub/authorize.

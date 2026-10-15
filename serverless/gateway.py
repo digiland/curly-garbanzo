@@ -559,7 +559,9 @@ class Gateway:
         try:
             await self.hub.open_worker(wid, ep["owner"], ep["size"], ep["id"], ep["name"])
         except HubError as e:
-            self.db.x("UPDATE endpoints SET last_error=? WHERE id=?", (str(e)[:300], ep["id"]))
+            # 409/503: every slice is busy, so jobs wait for one -- not an error.
+            if e.code not in (409, 503):
+                self.db.x("UPDATE endpoints SET last_error=? WHERE id=?", (str(e)[:300], ep["id"]))
             if e.code == 402:
                 # Out of credit: nothing will ever run, so say so rather than
                 # letting jobs sit until their TTL.
@@ -738,8 +740,9 @@ class Base(web.RequestHandler):
 
     LIMIT = MAX_INPUT
 
-    def initialize(self, gw):
+    def initialize(self, gw, via_hub=False):
         self.gw = gw
+        self.via_hub = via_hub
         self._chunks, self._size, self._too_big = [], 0, False
 
     def prepare(self):
@@ -775,6 +778,8 @@ class Base(web.RequestHandler):
             raise web.HTTPError(400, reason=f"invalid JSON: {e}")
 
     async def user(self):
+        if self.via_hub:
+            return self.hub_user()
         h = self.request.headers.get("Authorization", "")
         m = re.match(r"(?i)^(bearer|token)\s+(\S+)$", h)
         if not m:
@@ -786,6 +791,18 @@ class Base(web.RequestHandler):
         if not u:
             raise web.HTTPError(401, reason="token rejected")
         return u
+
+    def hub_user(self):
+        """The hub port: the hub's pages call on behalf of a logged-in user.
+        Authenticated by the hub<->gateway service token, which only the hub
+        and the gateway hold; the NetworkPolicy also admits only the hub pod."""
+        h = self.request.headers.get("Authorization", "")
+        if not hmac.compare_digest(h.encode(), f"token {HUB_TOKEN}".encode()):
+            raise web.HTTPError(401, reason="hub token required")
+        name = self.request.headers.get("X-Zai-User", "")
+        if not USER_RE.match(name):
+            raise web.HTTPError(400, reason="bad X-Zai-User")
+        return {"name": name, "admin": self.request.headers.get("X-Zai-Admin") == "1"}
 
     async def endpoint(self, ep_id):
         u = await self.user()
@@ -910,6 +927,29 @@ class PurgeHandler(Base):
         self.finish({"removed": len(rows), "status": "completed"})
 
 
+class JobsHandler(Base):
+    """Recent jobs, newest first: metadata only. Inputs and outputs stay
+    behind /status, and finished jobs are purged after RESULT_TTL."""
+
+    async def get(self, ep_id):
+        _, ep = await self.endpoint(ep_id)
+        rows = self.gw.db.q("SELECT id, status, created, started, finished, worker, error FROM jobs "
+                            "WHERE endpoint=? ORDER BY created DESC LIMIT 50", (ep["id"],))
+        jobs = []
+        for j in rows:
+            v = {"id": j["id"], "status": j["status"], "createdAt": int(j["created"] * 1000)}
+            if j["started"]:
+                v["delayTime"] = int((j["started"] - j["created"]) * 1000)
+            if j["finished"]:
+                v["finishedAt"] = int(j["finished"] * 1000)
+                if j["started"]:
+                    v["executionTime"] = int((j["finished"] - j["started"]) * 1000)
+            if j["error"]:
+                v["error"] = j["error"][:300]
+            jobs.append(v)
+        self.finish({"jobs": jobs})
+
+
 class HealthHandler(Base):
     async def get(self, ep_id):
         _, ep = await self.endpoint(ep_id)
@@ -1030,10 +1070,8 @@ class PingHandler(WorkerBase):
         self.finish({})
 
 
-def make_apps(gw):
-    a = {"gw": gw}
-    public = web.Application([
-        (r"/healthz", Healthz),
+def _api_routes(a):
+    return [
         (r"/v2/endpoints", EndpointsHandler, a),
         (r"/v2/endpoints/([a-z0-9]+)", EndpointHandler, a),
         (r"/v2/([a-z0-9]+)/(run|runsync)", RunHandler, a),
@@ -1042,7 +1080,16 @@ def make_apps(gw):
         (r"/v2/([a-z0-9]+)/cancel/([0-9a-zA-Z-]+)", CancelHandler, a),
         (r"/v2/([a-z0-9]+)/purge-queue", PurgeHandler, a),
         (r"/v2/([a-z0-9]+)/health", HealthHandler, a),
-    ])
+        (r"/v2/([a-z0-9]+)/jobs", JobsHandler, a),
+    ]
+
+
+def make_apps(gw):
+    a = {"gw": gw}
+    public = web.Application([(r"/healthz", Healthz)] + _api_routes(a))
+    # The same API for the hub's Endpoints page, on its own port so that
+    # neither the internet (public) nor workers (internal) can reach it.
+    hub = web.Application([(r"/healthz", Healthz)] + _api_routes({"gw": gw, "via_hub": True}))
     internal = web.Application([
         (r"/healthz", Healthz),
         (r"/internal/(job-take|job-take-batch)/([a-z0-9-]+)", JobTakeHandler, a),
@@ -1050,7 +1097,7 @@ def make_apps(gw):
         (r"/internal/(job-done|job-stream)/([a-z0-9-]+)", JobDoneHandler, a),
         (r"/internal/ping/([a-z0-9-]+)", PingHandler, a),
     ])
-    return public, internal
+    return public, internal, hub
 
 
 async def main():
@@ -1059,12 +1106,14 @@ async def main():
     if not HUB_TOKEN:
         raise SystemExit("HUB_TOKEN is not set")
     gw = Gateway()
-    public, internal = make_apps(gw)
+    public, internal, hub = make_apps(gw)
     # The handlers enforce the real limits (and answer 413); these only stop
     # an unbounded upload from being read forever.
     HTTPServer(public, max_body_size=4 * MAX_INPUT).listen(int(_env("PUBLIC_PORT", 8080)))
     HTTPServer(internal, max_body_size=4 * MAX_OUTPUT).listen(int(_env("INTERNAL_PORT", 8081)))
-    log.info("serverless gateway up: public :%s, internal :%s", _env("PUBLIC_PORT", 8080), _env("INTERNAL_PORT", 8081))
+    HTTPServer(hub, max_body_size=4 * MAX_INPUT).listen(int(_env("GW_HUB_PORT", 8082)))
+    log.info("serverless gateway up: public :%s, internal :%s, hub :%s",
+             _env("PUBLIC_PORT", 8080), _env("INTERNAL_PORT", 8081), _env("GW_HUB_PORT", 8082))
     await gw.run_loop()
 
 

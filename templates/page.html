@@ -370,6 +370,26 @@
   .z-topup { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .75rem; align-items: end; }
   .z-topup select.z-input { appearance: auto; }
 
+  /* ---- serverless endpoints ---- */
+  .z-ep { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .z-ep-head { display: flex; justify-content: space-between; align-items: start; gap: 1rem; flex-wrap: wrap; }
+  .z-ep-head h2 { margin: 0; }
+  .z-ep-id { font-family: var(--z-mono); font-size: .8rem; font-weight: 500; color: var(--z-muted); margin-left: .35rem; }
+  .z-ep-meta { font-size: .85rem; color: var(--z-muted); margin-top: .3rem; line-height: 1.5; }
+  .z-ep-section { border-top: 1px solid var(--z-line); padding-top: .85rem; }
+  .z-ep-section > summary { cursor: pointer; font-weight: 600; font-size: .95rem; }
+  .z-ep-section[open] > summary { margin-bottom: .75rem; }
+  .z-ep-section p { font-size: .9rem; }
+  .z-ep-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; align-items: start; margin-bottom: .6rem; }
+  .z-ep-copy .z-pre { margin: 0; }
+  .z-ep-small { font-size: .82rem; color: var(--z-muted); margin: .6rem 0 0; }
+  .z-ep-err { font-size: .78rem; color: var(--z-bad); margin-top: .25rem; max-width: 28rem; overflow-wrap: anywhere; }
+  .z-ep-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .75rem; }
+  .z-ep-actions:empty { display: none; }
+  .z-ep-run { display: grid; gap: .6rem; }
+  .z-ep-run textarea, #c-env { font-family: var(--z-mono); font-size: .85rem; }
+  .z-ep-wide { grid-column: 1 / -1; }
+
   [data-bs-theme="dark"] .modal-content { background: var(--z-surface); color: var(--z-ink); }
 
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -381,6 +401,7 @@
     {% if user %}
         {% set zb = zai_balance if zai_balance is defined else None %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}account">Account{% if zb %} <span class="z-nav-balance{% if zb.low %} is-low{% endif %}">{{ zb.text }}</span>{% endif %}</a></li>
+        {% if zai_serverless is defined and zai_serverless %}<li class="nav-item"><a class="nav-link" href="{{base_url}}endpoints">Endpoints</a></li>{% endif %}
     {% endif %}
     <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
     {% if user and user.admin %}

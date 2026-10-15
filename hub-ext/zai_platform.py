@@ -20,8 +20,10 @@ round to nothing.
 """
 
 import csv
+import asyncio
 import inspect
 import io
+import json
 import os
 import re
 import sqlite3
@@ -35,6 +37,7 @@ from jupyterhub.apihandlers.base import APIHandler
 from jupyterhub.handlers.base import BaseHandler
 from kubespawner import KubeSpawner
 from tornado import web
+from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 
 DB_PATH = os.environ.get("ZAI_DB", "/srv/jupyterhub/usage.sqlite")
 CATALOG_PATH = os.environ.get("ZAI_CATALOG", "/etc/jupyterhub/zai/catalog.yaml")
@@ -246,6 +249,7 @@ def init_db():
             ("gpus",     "INTEGER NOT NULL DEFAULT 0"),
             ("rate",     "INTEGER NOT NULL DEFAULT 0"),        # micros/hour, snapshotted at start
             ("charged",  "INTEGER NOT NULL DEFAULT 0"),        # 1 once its ledger row exists
+            ("endpoint", "TEXT NOT NULL DEFAULT ''"),          # workers: the serverless endpoint id
         ]:
             if col not in have:
                 con.execute(f"ALTER TABLE sessions ADD COLUMN {col} {ddl}")
@@ -568,6 +572,164 @@ def _when(ts):
 def _size_name(slug):
     z = CATALOG.size(slug)
     return z["name"] if z else slug
+
+
+# ---------------------------------------------------------------------------
+# Serverless endpoints page. The data lives in the gateway; the hub asks for
+# it on the logged-in user's behalf, over the gateway's hub-only port.
+# ---------------------------------------------------------------------------
+
+GATEWAY_URL = os.environ.get("ZAI_GATEWAY_URL", "http://serverless-gateway-internal:8082").rstrip("/")
+GATEWAY_TOKEN = os.environ.get("ZAI_GATEWAY_TOKEN", "")
+ENV_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+class GatewayError(Exception):
+    pass
+
+
+async def gateway(user, method, path, body=None):
+    """Call the gateway's API as `user`. The gateway applies its own checks
+    (owner or admin) exactly as for a customer's token."""
+    if not GATEWAY_TOKEN:
+        raise GatewayError("Serverless is not set up on this hub.")
+    req = HTTPRequest(
+        GATEWAY_URL + path, method=method, request_timeout=15,
+        body=json.dumps(body) if body is not None else (b"" if method == "POST" else None),
+        headers={"Authorization": f"token {GATEWAY_TOKEN}", "X-Zai-User": user.name,
+                 "X-Zai-Admin": "1" if user.admin else "0", "Content-Type": "application/json"})
+    try:
+        r = await AsyncHTTPClient().fetch(req, raise_error=False)
+    except Exception:
+        raise GatewayError("The serverless service is not reachable right now. Try again in a minute.")
+    try:
+        data = json.loads(r.body or b"{}")
+    except ValueError:
+        data = {}
+    if r.code == 599:
+        raise GatewayError("The serverless service is not reachable right now. Try again in a minute.")
+    if r.code >= 400:
+        raise GatewayError(str(data.get("error") or f"error {r.code}"))
+    return data
+
+
+def _endpoint_spend(con, ids, since, now):
+    """Charged plus accruing, per endpoint id, since `since`."""
+    out = {i: 0 for i in ids}
+    if not ids:
+        return out
+    marks = ",".join("?" * len(ids))
+    for r in con.execute(
+            f"SELECT s.endpoint, COALESCE(-SUM(l.micros),0) AS m FROM ledger l JOIN sessions s ON s.id=l.session_id "
+            f"WHERE s.kind='worker' AND l.kind='usage' AND l.ts>=? AND s.endpoint IN ({marks}) GROUP BY s.endpoint",
+            (since, *ids)):
+        out[r["endpoint"]] += r["m"]
+    for r in con.execute(f"SELECT endpoint, rate, started FROM sessions WHERE kind='worker' AND charged=0 "
+                         f"AND stopped IS NULL AND endpoint IN ({marks})", ids):
+        out[r["endpoint"]] += session_cost(r["rate"], max(r["started"], since), now)
+    return out
+
+
+class EndpointsPage(BaseHandler):
+    """GET/POST /hub/endpoints -- serverless endpoints: how to call them, their
+    queue, workers and recent jobs. Owners send test jobs and cancel; admins
+    see everyone's and create and delete."""
+
+    _form = {}      # a create form that failed, to refill it
+
+    @web.authenticated
+    async def get(self, message="", error=""):
+        user = self.current_user
+        endpoints, unavailable = [], ""
+        try:
+            listed = await gateway(user, "GET", "/v2/endpoints" + ("?all=1" if user.admin else ""))
+            eps = listed.get("endpoints", [])
+            details = await asyncio.gather(*[
+                asyncio.gather(gateway(user, "GET", f"/v2/{e['id']}/health"),
+                               gateway(user, "GET", f"/v2/{e['id']}/jobs")) for e in eps])
+            for e, (health, jobs) in zip(eps, details):
+                e["health"], e["jobs"] = health, jobs.get("jobs", [])
+                endpoints.append(e)
+        except GatewayError as ex:
+            unavailable = str(ex)
+        now = time.time()
+        month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with _db() as con:
+            spend = _endpoint_spend(con, [e["id"] for e in endpoints], month, now)
+        users = sorted(u.name for u in self.db.query(orm.User).all()) if user.admin else []
+        html = await self.render_template(
+            "endpoints.html", endpoints=endpoints, unavailable=unavailable, spend=spend,
+            message=message, error=error, catalog=CATALOG, money=CATALOG.money, rate_str=CATALOG.rate_str,
+            size_name=_size_name, public_host=self.request.host, users=users, now_ms=int(now * 1000),
+            form=self._form)
+        self.finish(html)
+
+    @web.authenticated
+    async def post(self):
+        user = self.current_user
+        action = self.get_body_argument("action", "")
+        ep = self.get_body_argument("endpoint", "")
+        if ep and not re.fullmatch(r"[a-z0-9]{12}", ep):
+            raise web.HTTPError(400, "bad endpoint id")
+        try:
+            if action == "run":
+                raw = self.get_body_argument("input", "").strip() or "{}"
+                try:
+                    payload = json.loads(raw)
+                except ValueError as ex:
+                    raise GatewayError(f"The input is not valid JSON: {ex}")
+                r = await gateway(user, "POST", f"/v2/{ep}/run", {"input": payload})
+                msg = f"Job {r.get('id', '')[:8]} queued. It appears under Recent jobs."
+            elif action == "cancel":
+                job = self.get_body_argument("job", "")
+                if not re.fullmatch(r"[0-9a-f-]{36}", job):
+                    raise web.HTTPError(400, "bad job id")
+                r = await gateway(user, "POST", f"/v2/{ep}/cancel/{job}")
+                msg = f"Job {job[:8]}: {r.get('status', '').lower().replace('_', ' ')}."
+            elif action == "purge":
+                r = await gateway(user, "POST", f"/v2/{ep}/purge-queue")
+                msg = f"Removed {r.get('removed', 0)} queued job(s)."
+            elif action == "create":
+                if not user.admin:
+                    raise web.HTTPError(403, "Administrators only")
+                self._form = {k: self.get_body_argument(k, "") for k in (
+                    "owner", "name", "size", "template", "workdir", "command",
+                    "max_workers", "idle_timeout", "execution_timeout", "env")}
+                r = await gateway(user, "POST", "/v2/endpoints", self._create_body(self._form))
+                self._form = {}
+                msg = f"Created {r['name']} ({r['id']}) for {r['owner']}."
+            elif action == "delete":
+                if not user.admin:
+                    raise web.HTTPError(403, "Administrators only")
+                await gateway(user, "DELETE", f"/v2/endpoints/{ep}")
+                msg = f"Deleted endpoint {ep}. Its queued and running jobs were cancelled."
+            else:
+                raise web.HTTPError(400, "unknown action")
+        except GatewayError as ex:
+            return await self.get(error=str(ex))
+        self.log.info("endpoints: %s %s %s", user.name, action, ep)
+        await self.get(message=msg)
+
+    @staticmethod
+    def _create_body(f):
+        def num(key):
+            try:
+                return int(f[key])
+            except ValueError:
+                raise GatewayError(f"{key.replace('_', ' ')}: a whole number")
+        env = {}
+        for n, line in enumerate(f["env"].splitlines(), 1):
+            if not line.strip():
+                continue
+            m = ENV_LINE.match(line.strip())
+            if not m:
+                raise GatewayError(f"Environment line {n}: write NAME=value")
+            env[m.group(1)] = m.group(2)
+        return {"owner": f["owner"], "name": f["name"].strip(), "size": f["size"], "template": f["template"],
+                "workdir": f["workdir"].strip().strip("/").removeprefix("~/"),
+                "command": f["command"].strip() or "python handler.py", "env": env,
+                "max_workers": num("max_workers"), "idle_timeout": num("idle_timeout"),
+                "execution_timeout": num("execution_timeout")}
 
 
 class AccountHandler(BaseHandler):
@@ -897,11 +1059,12 @@ class WorkerOpenAPI(_WorkerAPI):
                     raise web.HTTPError(503, f"no free {size['name']}")
             cur = con.execute(
                 "INSERT INTO sessions(username, server, profile, gpu, started, kind, size, template,"
-                " resource, gpus, rate) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " resource, gpus, rate, endpoint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (name, server, size["name"], int(bool(size["gpu"])), now, "worker", size["slug"],
                  _endpoint_label(body),
                  size["gpu"]["pool"] if size["gpu"] else "",
-                 size["gpu"]["count"] if size["gpu"] else 0, rate))
+                 size["gpu"]["count"] if size["gpu"] else 0, rate,
+                 str(body.get("endpoint", ""))[:64]))
         self.log.info("billing: worker %s opened for %s (%s)", worker, name, size["slug"])
         self.set_status(201)
         self.finish({"session": cur.lastrowid, "rate_per_hour": rate / MICROS})
@@ -970,6 +1133,7 @@ def configure(c):
 
     tv = dict(c.JupyterHub.get("template_vars", {}) or {})
     tv["zai_balance"] = nav_balance
+    tv["zai_serverless"] = CATALOG.sv_enabled
     c.JupyterHub.template_vars = tv
 
     handlers = list(c.JupyterHub.get("extra_handlers", []) or [])
@@ -977,6 +1141,7 @@ def configure(c):
         (r"/account", AccountHandler),
         (r"/billing", BillingHandler),
         (r"/usage", UsageHandler),
+        (r"/endpoints", EndpointsPage),
         (r"/zai/cli", CliHandler),
         (r"/api/zai/catalog", CatalogAPI),
         (r"/api/zai/me", MeAPI),
