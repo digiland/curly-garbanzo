@@ -23,6 +23,14 @@ Live reference deployment: `https://notebooks.futurezim.com`
   distributed training that a single notebook pod cannot do ([docs/CLUSTER.md](docs/CLUSTER.md))
 - **Colab-style notebook UX** — RAM/CPU meter, live GPU dashboard, Git integration,
   nbgitpuller links, a seeded welcome notebook, and optional object storage
+- **Pay-as-you-go GPU service** ([docs/PLATFORM.md](docs/PLATFORM.md)) — prepaid
+  credit that admins top up, per-second charging by size, servers stopped when
+  credit runs out; sizes and prices in one catalog file
+- **Sellable GPU sizes** — re-slice the H200 into mixed MIG layouts (e.g. 71 + 35 +
+  18 + 18 GB, or the whole 141 GB) with `scripts/11-gpu-layout.sh`
+- **Templates** — PyTorch, ComfyUI and vLLM images, picked at start time
+- **Remote access** — SSH / scp / VS Code Remote-SSH and authenticated web ports
+  through the existing tunnel, plus the `zai` CLI and a small JSON API
 
 ## Layout
 
@@ -30,13 +38,17 @@ Live reference deployment: `https://notebooks.futurezim.com`
 |---|---|
 | `scripts/` | Numbered, run-in-order deploy scripts — start here |
 | `host/` | Host-level units: MIG layout service, cloudflared QUIC tuning |
-| `images/` | Dockerfiles for the hub and singleuser images |
+| `images/` | Dockerfiles for the hub and singleuser images, and `templates/` (ComfyUI, vLLM) |
+| `hub-ext/` | The billing/sizes/templates layer and `catalog.yaml` (prices, sizes, templates) |
+| `cli/zai` | Customers' command-line tool (start/stop, SSH, balance) |
 | `charts/` | JupyterHub Helm values — base (single node) plus the multi-node overlay |
 | `k8s/` | cloudflared manifest; shared RWX claims and the training-job layer |
 | `templates/` | Branding for the hub's login/signup pages (a ConfigMap, not an image rebuild) |
 | `docs/BUILD-NOTES.md` | Full build log: what was on the box, what broke, how it was fixed |
 | `docs/OPERATIONS.md` | Day-two: onboarding, sizing, quotas, and the two things that take this down |
 | `docs/CLUSTER.md` | Running this on more than one node: what breaks, distributed training, notes on serving inference |
+| `docs/PLATFORM.md` | Selling GPU time: credit and billing, GPU sizes, templates, SSH/ports/API |
+| `docs/SERVERLESS.md` | Research and proposed design for RunPod-style serverless endpoints (not built) |
 
 ## Deploy
 
@@ -54,6 +66,9 @@ sudo scripts/07-user-storage.sh          # quota-enforced user storage (restarts
 sudo scripts/08-quota-apply.sh --install-timer
 scripts/99-verify.sh        # health check — run after deploy and after every reboot
 ```
+
+Optional, any time later: `sudo scripts/11-gpu-layout.sh mixed` to sell larger
+GPU slices (see [docs/PLATFORM.md](docs/PLATFORM.md#gpu-sizes)).
 
 **Claim the `admin` account before the public hostname is live.** NativeAuthenticator
 treats a signup named `admin` as pre-authorized, so whoever registers it first

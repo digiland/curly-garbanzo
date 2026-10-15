@@ -1,0 +1,17 @@
+#!/bin/bash
+# zai-vllm <model> [extra vllm serve args]
+#
+# Serves <model> (a Hugging Face id, or a local directory) with an
+# OpenAI-compatible API on port 8000, reachable from anywhere with your
+# JupyterHub token as the API key:
+#   base_url = https://<host>/user/<you>/proxy/8000/v1
+#
+# Defaults fit a MIG slice: weights are downloaded to ~/.cache/huggingface
+# (your volume; mind its size limit), and vLLM may use 90% of the slice's memory.
+set -eu
+[ $# -ge 1 ] || { sed -n '2,10p' "$0"; exit 1; }
+model="$1"; shift
+echo "Serving $model on :8000"
+echo "  URL: https://${ZAI_PUBLIC_HOST:-<host>}/user/${JUPYTERHUB_USER:-<you>}/proxy/8000/v1"
+exec /opt/vllm/bin/vllm serve "$model" --host 127.0.0.1 --port 8000 \
+    --gpu-memory-utilization 0.90 "$@"

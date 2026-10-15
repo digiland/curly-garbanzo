@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Enable MIG and partition the GPU into 7 x 1g.18gb, with boot persistence.
+# To sell other sizes afterwards (a 71 GB slice, the whole GPU), use
+# scripts/11-gpu-layout.sh; it rewrites the layout this installs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

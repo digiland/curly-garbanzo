@@ -1,0 +1,104 @@
+{% extends "page.html" %}
+{# Served by BillingHandler (hub-ext/zai_platform.py) at /hub/billing, admins
+   only. `people` = per-account balance / spend this month / running sessions;
+   `ledger` = newest 200 rows (filtered by ?user=). Money in micros. #}
+
+{% block title %}Billing · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">Administrator</div>
+      <h1>Billing</h1>
+      <p>Add credit after a customer pays you. Servers are charged by the second at the size's hourly price{% if catalog.admins_free %}; admins' own servers are free{% endif %}.
+        {% if catalog.enforce %}Enforcement is <strong>on</strong>: no start without credit, and servers stop at zero.
+        {% else %}Enforcement is <strong>off</strong>: charges are recorded but nobody is refused or stopped. Set <code>billing.enforce: true</code> in <code>hub-ext/catalog.yaml</code> to switch it on.{% endif %}</p>
+    </div>
+  </div>
+
+  {% if message %}<p class="z-alert is-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
+
+  <div class="z-stats">
+    <div class="z-stat"><div class="label">Credit sold this month</div><div class="value">{{ money(month_topups) }}</div></div>
+    <div class="z-stat"><div class="label">Usage charged this month</div><div class="value">{{ money(month_usage) }}</div></div>
+    <div class="z-stat"><div class="label">Accounts</div><div class="value">{{ people | length }}</div></div>
+  </div>
+
+  <section class="z-card">
+    <h2>Add credit</h2>
+    <form method="post" action="{{ base_url }}billing" class="z-topup">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <div class="z-field">
+        <label for="t-user">Account</label>
+        <select id="t-user" name="username" class="z-input" required>
+          {% for p in people %}<option value="{{ p.name }}" {% if p.name == only %}selected{% endif %}>{{ p.name }} · {{ money(p.balance) }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="z-field">
+        <label for="t-amount">Amount ({{ catalog.currency }})</label>
+        <input id="t-amount" name="amount" class="z-input" inputmode="decimal" pattern="-?[0-9]+(\.[0-9]{1,6})?" placeholder="20.00" required>
+      </div>
+      <div class="z-field">
+        <label for="t-kind">Type</label>
+        <select id="t-kind" name="kind" class="z-input">
+          <option value="topup">Top-up (payment received)</option>
+          <option value="adjust">Adjustment (refund, correction; may be negative)</option>
+        </select>
+      </div>
+      <div class="z-field">
+        <label for="t-note">Note</label>
+        <input id="t-note" name="note" class="z-input" maxlength="200" placeholder="EcoCash ref 4F2K…">
+      </div>
+      <div><button type="submit" class="z-btn is-block">Add</button></div>
+    </form>
+  </section>
+
+  <section class="z-card">
+    <h2>Accounts</h2>
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Username</th><th class="num">Balance</th><th class="num">Spent this month</th><th class="num">Topped up this month</th><th></th></tr></thead>
+        <tbody>
+          {% for p in people %}
+          <tr>
+            <td><strong>{{ p.name }}</strong>{% if p.running %} <span class="z-pill is-ok">running</span>{% endif %}</td>
+            <td class="num"><strong class="{{ 'z-amount-neg' if p.balance <= 0 else '' }}">{{ money(p.balance) }}</strong></td>
+            <td class="num">{{ money(p.spent) }}</td>
+            <td class="num">{{ money(p.topped) }}</td>
+            <td class="num"><a href="{{ base_url }}billing?user={{ p.name }}">History</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="z-card">
+    <h2>Ledger{% if only %} · {{ only }} <a href="{{ base_url }}billing" style="font-size:.85rem;font-weight:500">show everyone</a>{% endif %}</h2>
+    {% if ledger %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>When (UTC)</th><th>Account</th><th>Type</th><th>Note</th><th>By</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          {% for r in ledger %}
+          <tr>
+            <td>{{ when(r.ts) }}</td>
+            <td>{{ r.username }}</td>
+            <td>{{ r.kind }}</td>
+            <td>{{ r.note }}</td>
+            <td>{{ r.actor }}</td>
+            <td class="num {{ 'z-amount-pos' if r.micros > 0 else 'z-amount-neg' }}">{{ ('+' if r.micros > 0 else '') ~ money(r.micros) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="z-empty" style="margin-top:.9rem"><a href="{{ base_url }}billing?format=csv{% if only %}&amp;user={{ only }}{% endif %}">Download as CSV</a> · usage is posted when a server stops; running servers show in balances immediately.</p>
+    {% else %}
+      <p class="z-empty">Nothing yet.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock main %}

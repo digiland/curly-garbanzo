@@ -1,0 +1,92 @@
+# Catalog for the multi-node overlay (charts/jupyterhub-values-cluster.yaml),
+# replacing the profileList that file used to carry. Same format as
+# catalog.yaml; deploy with
+#
+#   ZAI_EXTRA_CATALOG=hub-ext/catalog.cluster.yaml \
+#   EXTRA_VALUES=charts/jupyterhub-values-cluster.yaml scripts/05-jupyterhub.sh
+#
+# MIG slices and whole GPUs are both `nvidia.com/gpu` here (migStrategy=single
+# on every node), on different node pools. Capacity is therefore counted per
+# `pool`, not per resource name -- otherwise a free whole GPU would be offered
+# to someone asking for a slice and vice versa. Set the counts to what the
+# cluster really has. GPU sizes set runtime_class because the overlay removes
+# the nvidia runtime class from pods by default (CPU nodes do not have it).
+
+currency: {code: USD, symbol: "$"}
+
+billing:
+  enforce: false
+  min_minutes_to_start: 10
+  admins_free: true
+  signup_credit: 0
+  low_balance: 2.00
+
+gpu_pools:
+  mig-slices: 7       # MIG 1g.18gb slices on caimex.io/pool=mig nodes
+  whole-gpus: 8       # full GPUs on caimex.io/pool=gpu nodes
+
+sizes:
+  - slug: cpu
+    name: "CPU only"
+    description: "8 GB RAM, 2 CPU. Data prep, analysis, writing code before you queue a job."
+    cpu: 2
+    cpu_guarantee: 0.5
+    memory: 8G
+    memory_guarantee: 1G
+    node_selector: {caimex.io/pool: cpu}
+    price_per_hour: 0.05
+    default: true
+
+  - slug: gpu-18
+    name: "GPU · 18 GB slice"
+    description: "One MIG slice, 12 GB RAM, 2 CPU. Interactive work and single-GPU fine-tunes."
+    gpu: {resource: nvidia.com/gpu, pool: mig-slices, count: 1, vram_gb: 18}
+    cpu: 2
+    cpu_guarantee: 0.5
+    memory: 12G
+    memory_guarantee: 1G
+    node_selector: {caimex.io/pool: mig}
+    runtime_class: nvidia
+    price_per_hour: 0.49
+
+  - slug: gpu-whole
+    name: "GPU · whole H200"
+    description: "One full GPU, 48 GB RAM, 8 CPU. Models too large for a slice."
+    gpu: {resource: nvidia.com/gpu, pool: whole-gpus, count: 1, vram_gb: 141}
+    cpu: 8
+    cpu_guarantee: 2
+    memory: 48G
+    memory_guarantee: 4G
+    node_selector: {caimex.io/pool: gpu}
+    runtime_class: nvidia
+    price_per_hour: 3.49
+
+  - slug: gpu-8x
+    name: "GPU · 8 x H200 (one node)"
+    description: "All 8 GPUs on one node, 192 GB RAM. DDP/FSDP within one host; for more, submit a PyTorchJob."
+    gpu: {resource: nvidia.com/gpu, pool: whole-gpus, count: 8, vram_gb: 1128}
+    cpu: 32
+    cpu_guarantee: 8
+    memory: 192G
+    memory_guarantee: 16G
+    node_selector: {caimex.io/pool: gpu}
+    runtime_class: nvidia
+    price_per_hour: 27.92
+
+templates:
+  - slug: pytorch
+    name: "PyTorch + JupyterLab"
+    description: "CUDA 12, PyTorch, the caimex CLI."
+    image: REGISTRY_PLACEHOLDER/pytorch-caimex:cuda12-r3
+    default: true
+  - slug: comfyui
+    name: "ComfyUI"
+    description: "Node-based image and video generation."
+    image: REGISTRY_PLACEHOLDER/zai-comfyui:cuda12-r3
+    gpu_required: true
+    default_url: /comfyui/
+  - slug: vllm
+    name: "vLLM inference server"
+    description: "OpenAI-compatible LLM serving on port 8000."
+    image: REGISTRY_PLACEHOLDER/zai-vllm:cuda12-r3
+    gpu_required: true

@@ -1,0 +1,108 @@
+# What customers can start, and what it costs. Read by the hub at startup
+# (hub-ext/zai_platform.py); edit, then `scripts/05-jupyterhub.sh` to apply.
+#
+# Prices are per hour of a server *running*, charged to the second. Money is
+# kept internally in millionths of the currency, so sub-cent rates are exact.
+
+currency:
+  code: USD
+  symbol: "$"
+
+billing:
+  # false: charges are recorded and balances shown, but nobody is refused or
+  #        stopped. Use this to switch billing on without locking anyone out,
+  #        then top everyone up and set true.
+  # true:  a server cannot start without credit for min_minutes_to_start, and a
+  #        running one is stopped when its owner's balance reaches zero.
+  enforce: false
+  min_minutes_to_start: 10
+  # Admins' own servers are not charged.
+  admins_free: true
+  # Granted once, the first time an account is seen by billing (existing
+  # accounts included). 0 = nothing.
+  signup_credit: 0
+  # Below this the account page and nav show a low-balance warning.
+  low_balance: 2.00
+
+# GPU inventory: how many of each Kubernetes GPU resource exist. Must match
+# what the node advertises (`kubectl describe node | grep nvidia.com`). The hub
+# refuses a start that would exceed it instead of leaving a pod Pending for 10
+# minutes. A size draws from the pool named like its gpu.resource, or from
+# gpu.pool when set (see catalog.cluster.yaml for why that exists).
+#
+# This is the 7 x 1g.18gb layout with the device plugin's migStrategy=single,
+# where every slice is plain `nvidia.com/gpu`. For a mixed layout see
+# scripts/11-gpu-layout.sh, which prints the block to paste here.
+gpu_pools:
+  nvidia.com/gpu: 7
+
+sizes:
+  - slug: gpu-18
+    name: "GPU · 18 GB"
+    description: "One H200 MIG slice. 12 GB RAM, 2 CPU. Notebooks, fine-tuning small models, 7B inference in 4-bit."
+    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 18}
+    cpu: 2
+    cpu_guarantee: 0.5
+    memory: 12G
+    memory_guarantee: 1G
+    price_per_hour: 0.49
+    default: true
+
+  - slug: gpu-18-highmem
+    name: "GPU · 18 GB, high memory"
+    description: "Same slice with 24 GB RAM and 4 CPU, for datasets held in host memory."
+    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 18}
+    cpu: 4
+    cpu_guarantee: 1
+    memory: 24G
+    memory_guarantee: 2G
+    price_per_hour: 0.69
+
+  - slug: cpu
+    name: "CPU only"
+    description: "No GPU. 8 GB RAM, 2 CPU. Data prep and writing code; leaves a slice for someone who needs it."
+    cpu: 2
+    cpu_guarantee: 0.5
+    memory: 8G
+    memory_guarantee: 1G
+    price_per_hour: 0.05
+
+  # With a mixed layout (scripts/11-gpu-layout.sh mixed), replace the sizes
+  # above with ones like these. Resource names change under migStrategy=mixed.
+  #
+  # - slug: gpu-18
+  #   name: "GPU · 18 GB"
+  #   gpu: {resource: nvidia.com/mig-1g.18gb, count: 1, vram_gb: 18}
+  #   cpu: 2, memory: 12G ...                    price_per_hour: 0.49
+  # - slug: gpu-35
+  #   name: "GPU · 35 GB"
+  #   gpu: {resource: nvidia.com/mig-2g.35gb, count: 1, vram_gb: 35}
+  #   cpu: 4, memory: 24G ...                    price_per_hour: 0.99
+  # - slug: gpu-71
+  #   name: "GPU · 71 GB"
+  #   gpu: {resource: nvidia.com/mig-3g.71gb, count: 1, vram_gb: 71}
+  #   cpu: 8, memory: 48G ...                    price_per_hour: 1.89
+
+# Curated images. Every template is built FROM the notebook image, so each one
+# still runs JupyterLab, SSH and the port proxy; the template adds an app.
+# Arbitrary customer images are deliberately not offered: on a shared GPU node
+# an untrusted image is the largest risk this platform could take on.
+templates:
+  - slug: pytorch
+    name: "PyTorch + JupyterLab"
+    description: "CUDA 12, PyTorch, the caimex CLI. The general-purpose default."
+    image: local/pytorch-caimex:cuda12-r3
+    default: true
+
+  - slug: comfyui
+    name: "ComfyUI"
+    description: "Node-based image and video generation. Opens in its own tab; models go in ~/ComfyUI/models."
+    image: local/zai-comfyui:cuda12-r3
+    gpu_required: true
+    default_url: /comfyui/
+
+  - slug: vllm
+    name: "vLLM inference server"
+    description: "OpenAI-compatible LLM serving. Run `zai-vllm <model>`, call it at /user/<you>/proxy/8000/v1."
+    image: local/zai-vllm:cuda12-r3
+    gpu_required: true

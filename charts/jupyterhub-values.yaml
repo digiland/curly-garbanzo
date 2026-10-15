@@ -35,9 +35,15 @@ hub:
     - name: custom-templates
       configMap:
         name: hub-custom-templates
+    - name: zai-platform
+      configMap:
+        name: hub-zai
   extraVolumeMounts:
     - name: custom-templates
       mountPath: /etc/jupyterhub/custom-templates
+      readOnly: true
+    - name: zai-platform
+      mountPath: /etc/jupyterhub/zai
       readOnly: true
   extraEnv:
     # Optional. When set, users whose signup email matches SELF_APPROVAL_DOMAINS
@@ -185,159 +191,19 @@ hub:
           c.NativeAuthenticator.recaptcha_key = _rk
           c.NativeAuthenticator.recaptcha_secret = _rs
 
-    # Per-user usage accounting. JupyterHub only remembers the *current* server's
-    # start time, so "how many GPU hours has this person used" is unanswerable
-    # from its own database. This records one row per server session (user,
-    # profile, GPU or not, start, stop) in a small SQLite file on the hub's PVC
-    # and serves an admin-only summary at /hub/usage (?format=csv for export).
-    # Counting starts the day this is deployed; there is no history before it.
-    03-usage-accounting: |
-      import csv, io, sqlite3, time
-      from datetime import datetime, timedelta, timezone
-      from kubespawner import KubeSpawner
-      from jupyterhub.handlers.base import BaseHandler
-      from tornado import web
-
-      USAGE_DB = "/srv/jupyterhub/usage.sqlite"   # same PVC as jupyterhub.sqlite
-
-      def _usage_db():
-          con = sqlite3.connect(USAGE_DB)
-          con.execute("""
-              CREATE TABLE IF NOT EXISTS sessions (
-                  id       INTEGER PRIMARY KEY,
-                  username TEXT NOT NULL,
-                  server   TEXT NOT NULL DEFAULT '',
-                  profile  TEXT NOT NULL DEFAULT '',
-                  gpu      INTEGER NOT NULL DEFAULT 0,
-                  started  REAL NOT NULL,          -- unix seconds, UTC
-                  stopped  REAL                    -- NULL while running
-              )""")
-          con.execute("CREATE INDEX IF NOT EXISTS ix_sessions_user ON sessions(username)")
-          return con
-
-      class UsageSpawner(KubeSpawner):
-          """KubeSpawner that logs each session to the usage table."""
-
-          def _usage_profile(self):
-              slug = (self.user_options or {}).get("profile") or ""
-              try:
-                  plist = self._get_initialized_profile_list(
-                      self._sorted_dict_values(self.profile_list))
-                  return self._get_profile(slug, plist)["display_name"]
-              except Exception:
-                  return slug
-
-          async def start(self):
-              result = await super().start()
-              # Only a successful start counts: a failed spawn holds no slice.
-              gpu = int(any("nvidia" in k for k in (self.extra_resource_limits or {})))
-              try:
-                  with _usage_db() as con:
-                      # A session left open by an unclean hub restart is closed
-                      # here rather than double-counted.
-                      con.execute("UPDATE sessions SET stopped=started WHERE username=? AND server=? AND stopped IS NULL",
-                                  (self.user.name, self.name))
-                      con.execute("INSERT INTO sessions(username, server, profile, gpu, started) VALUES (?,?,?,?,?)",
-                                  (self.user.name, self.name, self._usage_profile(), gpu, time.time()))
-              except Exception:
-                  self.log.exception("usage accounting: could not record start")
-              return result
-
-          async def run_post_stop_hook(self):
-              # User.stop() runs this in a `finally`, so it fires for every way a
-              # server ends: user stop, idle cull, pod crash, and pods found dead
-              # after a hub restart. In that last case the true stop time is
-              # unknown and "now" over-counts by however long the hub was down.
-              try:
-                  with _usage_db() as con:
-                      con.execute("UPDATE sessions SET stopped=? WHERE username=? AND server=? AND stopped IS NULL",
-                                  (time.time(), self.user.name, self.name))
-              except Exception:
-                  self.log.exception("usage accounting: could not record stop")
-              return await super().run_post_stop_hook()
-
-      c.JupyterHub.spawner_class = UsageSpawner
-
-      class UsageHandler(BaseHandler):
-          """GET /hub/usage — admin-only per-user totals, HTML or CSV."""
-
-          PERIODS = {"month": "This month", "30d": "Last 30 days", "all": "All time"}
-
-          @web.authenticated
-          async def get(self):
-              if not self.current_user.admin:
-                  raise web.HTTPError(403, "Administrators only")
-              period = self.get_argument("period", "month")
-              if period not in self.PERIODS:
-                  period = "month"
-              now = time.time()
-              if period == "month":
-                  since = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-              elif period == "30d":
-                  since = now - 30 * 86400
-              else:
-                  since = 0.0
-
-              with _usage_db() as con:
-                  rows = con.execute(
-                      "SELECT username, server, profile, gpu, started, stopped FROM sessions "
-                      "WHERE stopped IS NULL OR stopped >= ? ORDER BY started DESC", (since,)).fetchall()
-
-              per_user = {}
-              recent = []
-              for username, server, profile, gpu, started, stopped in rows:
-                  end = stopped if stopped is not None else now
-                  # Clip to the window so a session straddling its start only
-                  # counts the part inside it.
-                  secs = max(0.0, end - max(started, since))
-                  u = per_user.setdefault(username, {
-                      "username": username, "gpu_secs": 0.0, "cpu_secs": 0.0,
-                      "sessions": 0, "last": 0.0, "running": False})
-                  u["gpu_secs" if gpu else "cpu_secs"] += secs
-                  u["sessions"] += 1
-                  u["last"] = max(u["last"], end)
-                  u["running"] = u["running"] or stopped is None
-                  if len(recent) < 50:
-                      recent.append({"username": username, "profile": profile, "gpu": bool(gpu),
-                                     "started": started, "stopped": stopped,
-                                     "secs": end - started, "running": stopped is None})
-
-              users = sorted(per_user.values(), key=lambda u: (-u["gpu_secs"], -u["cpu_secs"], u["username"]))
-              total_gpu = sum(u["gpu_secs"] for u in users)
-              total_cpu = sum(u["cpu_secs"] for u in users)
-
-              if self.get_argument("format", "") == "csv":
-                  buf = io.StringIO()
-                  w = csv.writer(buf)
-                  w.writerow(["username", "gpu_hours", "cpu_hours", "sessions", "last_active_utc"])
-                  for u in users:
-                      w.writerow([u["username"], f'{u["gpu_secs"]/3600:.2f}', f'{u["cpu_secs"]/3600:.2f}',
-                                  u["sessions"], datetime.fromtimestamp(u["last"], timezone.utc).isoformat(timespec="seconds")])
-                  self.set_header("Content-Type", "text/csv; charset=utf-8")
-                  self.set_header("Content-Disposition", f'attachment; filename="usage-{period}.csv"')
-                  return self.finish(buf.getvalue())
-
-              def hours(secs):
-                  return f"{secs/3600:.1f}"
-              def when(ts):
-                  return datetime.fromtimestamp(ts, timezone.utc).strftime("%d %b %H:%M")
-              def dur(secs):
-                  m = int(secs // 60)
-                  if m < 1:
-                      return "<1m"
-                  return f"{m//60}h {m%60:02d}m" if m >= 60 else f"{m}m"
-
-              # Computed here: the hub renders templates async, where jinja's
-              # map|max filter chain cannot iterate.
-              max_gpu = max((u["gpu_secs"] for u in users), default=0.0)
-              running = sum(1 for u in users if u["running"])
-              html = await self.render_template(
-                  "usage.html", users=users, recent=recent, period=period, periods=self.PERIODS,
-                  total_gpu=total_gpu, total_cpu=total_cpu, since=since, max_gpu=max_gpu, running=running,
-                  hours=hours, when=when, dur=dur, sync=False)
-              self.finish(html)
-
-      c.JupyterHub.extra_handlers = [(r"/usage", UsageHandler)]
+    # The pay-as-you-go layer: sizes and templates from hub-ext/catalog.yaml,
+    # prepaid credit, capacity checks, and the /hub/account, /hub/billing,
+    # /hub/usage pages and /hub/api/zai/ endpoints. The code lives in
+    # hub-ext/zai_platform.py, mounted from the hub-zai ConfigMap, so changing
+    # prices or the module is a `scripts/05-jupyterhub.sh`, not an image rebuild.
+    # It replaces singleuser.profileList, which is why that key is gone below.
+    # Sessions and the money ledger are in /srv/jupyterhub/usage.sqlite, the
+    # same file (and table) the earlier usage accounting wrote, so history kept.
+    03-zai-platform: |
+      import sys
+      sys.path.insert(0, "/etc/jupyterhub/zai")
+      import zai_platform
+      zai_platform.configure(c)
 
     04-agents-route: |
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,
@@ -351,8 +217,8 @@ proxy:
 
 singleuser:
   image:
-    name: local/pytorch-caimex       # pytorch-notebook + caimex CLI preinstalled
-    tag: cuda12
+    name: local/pytorch-caimex       # pytorch-notebook + caimex CLI, SSH, port proxy
+    tag: cuda12-r3                   # the default; templates in hub-ext/catalog.yaml pick their own
     pullPolicy: Never                # local image in k3s containerd, not a registry
   extraEnv:
     # Shared caimex credential. Read at start by
@@ -364,6 +230,8 @@ singleuser:
           name: caimex-credentials
           key: api-key
     CAIMEX_MODEL: "caimex/Caimex2/deepseek-ai/DeepSeek-V4-Flash"
+    # Fills the hostname into ~/.zai/README.md (SSH, ports, API instructions).
+    ZAI_PUBLIC_HOST: "notebooks.futurezim.com"
     # S3-compatible object storage (DigitalOcean Spaces). Optional: when the
     # secret is absent these are unset and 30-objectstore.sh no-ops, so notebooks
     # still start. Present -> rclone remote + ~/spaces mount, boto3/aws-cli work
@@ -408,35 +276,9 @@ singleuser:
   startTimeout: 600
   defaultUrl: /lab
 
-  # Spawn-time choice. The CPU profile exists to protect the scarcest resource:
-  # there are only 7 MIG slices, and without this option every login consumes
-  # one even for work that never touches a GPU.
-  profileList:
-    - display_name: "GPU — Standard"
-      description: "1 MIG slice (18 GB VRAM), 12 GB RAM, 2 CPU. Start here."
-      default: true
-      kubespawner_override:
-        cpu_limit: 2
-        cpu_guarantee: 0.5
-        mem_limit: "12G"
-        mem_guarantee: "1G"
-        extra_resource_limits: {nvidia.com/gpu: "1"}
-    - display_name: "GPU — Large"
-      description: "1 MIG slice (18 GB VRAM), 24 GB RAM, 4 CPU. For large datasets held in host memory."
-      kubespawner_override:
-        cpu_limit: 4
-        cpu_guarantee: 1
-        mem_limit: "24G"
-        mem_guarantee: "2G"
-        extra_resource_limits: {nvidia.com/gpu: "1"}
-    - display_name: "CPU only — no GPU"
-      description: "8 GB RAM, 2 CPU, no GPU. Leaves a MIG slice free for someone who needs it."
-      kubespawner_override:
-        cpu_limit: 2
-        cpu_guarantee: 0.5
-        mem_limit: "8G"
-        mem_guarantee: "1G"
-        extra_resource_limits: {}
+  # Sizes and templates (KubeSpawner profile_list) are generated from
+  # hub-ext/catalog.yaml by extraConfig 03-zai-platform; do not set
+  # profileList here -- it would be overwritten.
 
 # Idle culling is mandatory: 7 slices total, an idle notebook holds one forever.
 cull:

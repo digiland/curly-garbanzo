@@ -16,17 +16,17 @@
   </div>
   <div class="z-card">
     {% if default_server.active %}
-      <p>Your JupyterLab is running{% if default_server.ready %} and holding its resources{% endif %}. Stopping it frees the GPU slice for someone else; your files stay.</p>
+      <p>Your server is running{% if default_server.ready %} and being charged{% endif %}. Stopping it ends the charge and frees its GPU; your files stay.</p>
       <div style="display:flex;gap:.75rem;flex-wrap:wrap">
         <a id="start" role="button" class="z-btn" href="{{ url }}">Open JupyterLab</a>
         <a id="stop" role="button" class="z-btn is-danger">Stop server</a>
       </div>
     {% else %}
-      <p>Nothing running. Starting takes about fifteen seconds; you'll choose a size first.</p>
+      <p>Nothing running, so nothing is being charged. Starting takes about fifteen seconds; you'll choose a size and template first.</p>
       <a id="start" role="button" class="z-btn" href="{{ url }}">Start server</a>
     {% endif %}
   </div>
-  <p class="z-empty">Servers stop on their own after 60 minutes idle. Your home directory (10 GB) is kept between sessions; <code>~/team</code> is shared with everyone.</p>
+  <p class="z-empty">Servers stop on their own after 60 minutes idle. Your home directory (10 GB) is kept between sessions. Balance, prices, SSH and API access: <a href="{{ base_url }}account">Account</a>.</p>
 </div>
 {% endblock main %}
 

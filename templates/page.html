@@ -324,6 +324,47 @@
   .z-bar { height: 4px; border-radius: 999px; background: var(--z-inset); margin-top: .35rem; overflow: hidden; }
   .z-bar i { display: block; height: 100%; background: var(--z-gold); }
 
+  /* ---- spawn: sizes + template (markup from hub-ext/zai_platform.py options_form) ---- */
+  .z-pill.is-bad  { background: var(--z-bad-soft);  color: var(--z-bad); }
+  .z-balance { margin: 0 0 1rem; color: var(--z-ink-2); font-variant-numeric: tabular-nums; }
+  .z-balance.is-low { color: var(--z-warn); }
+  .z-sizes { display: grid; gap: .75rem; margin: 0; padding: 0; border: 0; min-width: 0; }
+  .z-sizes legend, .z-template { font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; margin-bottom: .25rem; }
+  .z-size {
+    display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: start;
+    background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius);
+    padding: 1rem 1.1rem; margin: 0; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+  }
+  .z-size:hover { border-color: var(--z-line-strong); }
+  .z-size:has(input:checked) { border-color: var(--z-gold); box-shadow: 0 0 0 3px var(--z-gold-soft); }
+  .z-size.is-full { opacity: .6; cursor: not-allowed; }
+  .z-size input { accent-color: var(--z-gold); width: 18px; height: 18px; margin: .2rem 0 0; }
+  .z-size-body { display: grid; gap: .2rem; justify-items: start; min-width: 0; }
+  .z-size-top { display: flex; flex-wrap: wrap; gap: .25rem 1rem; justify-content: space-between; width: 100%; }
+  .z-size-top strong { font-family: var(--z-display); font-size: 1.05rem; font-weight: 600; }
+  .z-size-price { font-family: var(--z-display); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .z-size-spec { font-size: .85rem; color: var(--z-ink-2); font-variant-numeric: tabular-nums; }
+  .z-size-desc { font-size: .85rem; color: var(--z-muted); }
+  .z-template { display: grid; gap: .4rem; margin-top: 1.25rem; text-transform: none; letter-spacing: 0; font-size: .875rem; color: var(--z-ink); }
+  .z-template select {
+    font: inherit; font-weight: 500; padding: .6rem .75rem; border-radius: 8px; max-width: 100%;
+    border: 1px solid var(--z-line-strong); background: var(--z-surface); color: var(--z-ink);
+  }
+  .z-template-desc { font-weight: 400; color: var(--z-muted); font-size: .85rem; }
+
+  /* ---- account / billing ---- */
+  .z-nav-balance { font-variant-numeric: tabular-nums; font-weight: 700 !important; }
+  .z-nav-balance.is-low { color: #e8a24a !important; }
+  .z-amount-pos { color: var(--z-ok); }
+  .z-amount-neg { color: var(--z-ink-2); }
+  .z-pre {
+    font-family: var(--z-mono); font-size: .8rem; background: var(--z-inset); color: var(--z-ink);
+    border-radius: 8px; padding: .75rem .9rem; overflow-x: auto; white-space: pre; margin: .5rem 0 0;
+  }
+  .z-steps { margin: 0; padding-left: 1.2rem; display: grid; gap: .6rem; }
+  .z-topup { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .75rem; align-items: end; }
+  .z-topup select.z-input { appearance: auto; }
+
   [data-bs-theme="dark"] .modal-content { background: var(--z-surface); color: var(--z-ink); }
 
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -332,9 +373,14 @@
 
 {% block nav_bar_left_items %}
     {{ super() }}
+    {% if user %}
+        {% set zb = zai_balance if zai_balance is defined else None %}
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}account">Account{% if zb %} <span class="z-nav-balance{% if zb.low %} is-low{% endif %}">{{ zb.text }}</span>{% endif %}</a></li>
+    {% endif %}
     <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
     {% if user and user.admin %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Approve users</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}billing">Billing</a></li>
         <li class="nav-item"><a class="nav-link" href="{{base_url}}usage">Usage</a></li>
     {% endif %}
 {% endblock %}

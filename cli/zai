@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""zai -- start, stop and reach your ZAI GPU server from your own machine.
+
+Python 3.8+ and nothing else: no pip install. Download it from your account
+page (https://<host>/hub/account) or https://<host>/hub/zai/cli.
+
+    zai login https://notebooks.example.com     # paste a token from /hub/token
+    zai sizes                                   # prices and free GPUs
+    zai start --size gpu-18 --template pytorch --wait
+    zai status
+    zai ssh-config >> ~/.ssh/config && ssh zai  # needs your key in ~/.ssh/authorized_keys on the server
+    zai url 8000                                # public URL of port 8000 in your server
+    zai stop
+
+Settings are kept in ~/.config/zai/config.json (mode 600). ZAI_HOST and
+ZAI_TOKEN override it, which is handy in CI.
+"""
+
+import argparse
+import base64
+import getpass
+import hashlib
+import json
+import os
+import shlex
+import socket
+import ssl
+import struct
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONFIG = os.path.join(os.path.expanduser("~"), ".config", "zai", "config.json")
+
+
+class ZaiError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# config + HTTP
+# ---------------------------------------------------------------------------
+
+def load_config():
+    cfg = {}
+    try:
+        with open(CONFIG) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        pass
+    if os.environ.get("ZAI_HOST"):
+        cfg["host"] = os.environ["ZAI_HOST"]
+    if os.environ.get("ZAI_TOKEN"):
+        cfg["token"] = os.environ["ZAI_TOKEN"]
+    if not cfg.get("host") or not cfg.get("token"):
+        raise ZaiError("Not logged in. Run: zai login https://<host>")
+    cfg["host"] = cfg["host"].rstrip("/")
+    return cfg
+
+
+def save_config(cfg):
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    fd = os.open(CONFIG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def api(cfg, method, path, body=None):
+    url = cfg["host"] + "/hub/api" + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": "token " + cfg["token"],
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            msg = json.loads(raw).get("message") or raw.decode()
+        except ValueError:
+            msg = raw.decode(errors="replace")[:300]
+        if e.code == 403 and "token" in msg.lower():
+            msg += " (is your token still valid? zai login again)"
+        raise ZaiError(f"{msg} [HTTP {e.code}]") from None
+    except urllib.error.URLError as e:
+        raise ZaiError(f"cannot reach {cfg['host']}: {e.reason}") from None
+
+
+def money(v, cur):
+    sym = {"USD": "$", "EUR": "€", "GBP": "£", "ZAR": "R"}.get(cur, cur + " ")
+    return f"-{sym}{abs(v):,.2f}" if v < 0 else f"{sym}{v:,.2f}"
+
+
+def server_state(cfg):
+    _, me = api(cfg, "GET", "/user")
+    srv = (me.get("servers") or {}).get("")
+    return me["name"], srv
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+def cmd_login(a):
+    host = (a.host or input("Host (https://...): ")).strip().rstrip("/")
+    if not host.startswith("http"):
+        host = "https://" + host
+    print(f"Create a token at {host}/hub/token and paste it here.")
+    token = a.token or getpass.getpass("Token: ").strip()
+    cfg = {"host": host, "token": token}
+    _, me = api(cfg, "GET", "/user")
+    cfg["user"] = me["name"]
+    save_config(cfg)
+    print(f"Logged in as {me['name']}. Saved to {CONFIG}")
+
+
+def cmd_status(a):
+    cfg = load_config()
+    name, srv = server_state(cfg)
+    _, acct = api(cfg, "GET", "/zai/me")
+    cur = acct["currency"]
+    bal = "not charged (admin)" if acct["admin_free"] else money(acct["balance"], cur)
+    print(f"user     {name}")
+    print(f"balance  {bal}{'  (low)' if acct['low'] and not acct['admin_free'] else ''}")
+    if not srv:
+        print("server   stopped")
+        return
+    opts = srv.get("user_options") or {}
+    state = "running" if srv.get("ready") else f"pending ({srv.get('pending')})"
+    print(f"server   {state}  size={opts.get('profile', '?')} template={opts.get('template', 'default')}")
+    print(f"url      {cfg['host']}{srv['url']}")
+    for r in acct["running"]:
+        mins = (time.time() - r["started"]) / 60
+        print(f"cost     {money(r['cost_so_far'], cur)} so far, {mins:.0f} min at {money(r['price_per_hour'], cur)}/h")
+
+
+def cmd_sizes(a):
+    cfg = load_config()
+    _, cat = api(cfg, "GET", "/zai/catalog")
+    cur = cat["currency"]
+    print(f"{'SIZE':<18} {'PER HOUR':>9} {'FREE':>5}  HARDWARE / TEMPLATES")
+    for z in cat["sizes"]:
+        hw = (f"{z['gpu']['vram_gb']} GB VRAM, " if z["gpu"] else "no GPU, ") + f"{z['memory']} RAM, {z['cpu']} CPU"
+        free = "-" if z["available"] is None else str(z["available"])
+        mark = "*" if z["default"] else " "
+        print(f"{z['slug'] + mark:<18} {money(z['price_per_hour'], cur):>9} {free:>5}  {hw}")
+        print(f"{'':<35}templates: {', '.join(z['templates'])}")
+    print("\nTEMPLATES")
+    for t in cat["templates"]:
+        print(f"  {t['slug']:<12} {t['name']} -- {t['description']}")
+    if not cat["enforce"]:
+        print("\n(billing is in record-only mode on this hub)")
+
+
+def cmd_start(a):
+    cfg = load_config()
+    name, srv = server_state(cfg)
+    if srv:
+        raise ZaiError(f"Your server is already {'running' if srv.get('ready') else 'starting'}. zai stop first.")
+    body = {}
+    if a.size:
+        body["profile"] = a.size
+    if a.template:
+        body["template"] = a.template
+    code, _ = api(cfg, "POST", f"/users/{urllib.parse.quote(name)}/server", body)
+    print("Starting..." if code == 202 else "Started.")
+    if a.wait:
+        deadline = time.time() + a.timeout
+        while time.time() < deadline:
+            _, srv = server_state(cfg)
+            if srv and srv.get("ready"):
+                break
+            if not srv:
+                raise ZaiError("The server stopped while starting. Check the hub page for the error.")
+            time.sleep(2)
+        else:
+            raise ZaiError("Timed out waiting for the server.")
+        print(f"Ready: {cfg['host']}{srv['url']}")
+
+
+def cmd_stop(a):
+    cfg = load_config()
+    name, srv = server_state(cfg)
+    if not srv:
+        print("Already stopped.")
+        return
+    api(cfg, "DELETE", f"/users/{urllib.parse.quote(name)}/server")
+    print("Stopping. Charges end when it's down; your files are kept.")
+
+
+def cmd_url(a):
+    cfg = load_config()
+    name = cfg.get("user") or server_state(cfg)[0]
+    base = f"{cfg['host']}/user/{urllib.parse.quote(name)}"
+    print(f"{base}/proxy/{a.port}/" if a.port else f"{base}/lab")
+
+
+def cmd_ssh_config(a):
+    cfg = load_config()
+    name = cfg.get("user") or server_state(cfg)[0]
+    me = os.path.abspath(sys.argv[0])
+    py = sys.executable or "python3"
+    host = urllib.parse.urlparse(cfg["host"]).hostname
+    print(f"""Host {a.alias}
+    HostName {host}
+    User jovyan
+    HostKeyAlias zai-{name}@{host}
+    ProxyCommand {shlex.quote(py)} {shlex.quote(me)} ssh-proxy
+    ServerAliveInterval 30
+    ServerAliveCountMax 4""")
+
+
+def cmd_balance(a):
+    cfg = load_config()
+    _, acct = api(cfg, "GET", "/zai/me")
+    print("not charged (admin)" if acct["admin_free"] else money(acct["balance"], acct["currency"]))
+
+
+# ---------------------------------------------------------------------------
+# ssh-proxy: stdin/stdout <-> websocket <-> sshd in your server
+#
+# jupyter-server-proxy bridges wss://<host>/user/<you>/ssh/ to an sshd it
+# starts on demand. A minimal RFC 6455 client, so nothing needs installing.
+# ---------------------------------------------------------------------------
+
+class WebSocket:
+    def __init__(self, url, headers):
+        u = urllib.parse.urlparse(url)
+        secure = u.scheme in ("https", "wss")
+        port = u.port or (443 if secure else 80)
+        sock = socket.create_connection((u.hostname, port), timeout=30)
+        if secure:
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=u.hostname)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+        lines = [f"GET {path} HTTP/1.1", f"Host: {u.netloc}", "Upgrade: websocket", "Connection: Upgrade",
+                 f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13"]
+        lines += [f"{k}: {v}" for k, v in headers.items()]
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise ZaiError("connection closed during websocket handshake")
+            buf += chunk
+        head, _, self._buf = buf.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n")[0].decode(errors="replace")
+        if " 101 " not in status + " ":
+            hint = {"302": "token rejected, or server not running",
+                    "403": "token rejected", "404": "server not running (zai start)",
+                    "503": "server not running (zai start)"}
+            code = status.split(" ")[1] if " " in status else "?"
+            raise ZaiError(f"SSH bridge refused: {status} -- {hint.get(code, 'see hub logs')}")
+        want = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
+        for line in head.split(b"\r\n")[1:]:
+            k, _, v = line.partition(b":")
+            if k.strip().lower() == b"sec-websocket-accept" and v.strip() != want:
+                raise ZaiError("bad websocket accept key")
+        sock.settimeout(None)
+        self.sock = sock
+        self._send_lock = threading.Lock()
+
+    def send(self, opcode, payload=b""):
+        n = len(payload)
+        head = bytes([0x80 | opcode])
+        if n < 126:
+            head += bytes([0x80 | n])
+        elif n < 65536:
+            head += bytes([0x80 | 126]) + struct.pack("!H", n)
+        else:
+            head += bytes([0x80 | 127]) + struct.pack("!Q", n)
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i & 3] for i, b in enumerate(payload)) if n < 4096 else _mask_fast(payload, mask)
+        with self._send_lock:
+            self.sock.sendall(head + mask + masked)
+
+    def _read(self, n):
+        while len(self._buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise EOFError
+            self._buf += chunk
+        out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+    def recv(self):
+        """Next data payload (bytes), or None when the peer closes."""
+        while True:
+            b1, b2 = self._read(2)
+            opcode, n = b1 & 0x0F, b2 & 0x7F
+            if n == 126:
+                n = struct.unpack("!H", self._read(2))[0]
+            elif n == 127:
+                n = struct.unpack("!Q", self._read(8))[0]
+            mask = self._read(4) if b2 & 0x80 else None
+            data = self._read(n)
+            if mask:
+                data = _mask_fast(data, mask)
+            if opcode in (0, 1, 2):
+                return data
+            if opcode == 8:
+                return None
+            if opcode == 9:
+                self.send(10, data)
+
+
+def _mask_fast(data, mask):
+    n = len(data)
+    m = int.from_bytes((mask * (n // 4 + 1))[:n], "big")
+    return (int.from_bytes(data, "big") ^ m).to_bytes(n, "big")
+
+
+def cmd_ssh_proxy(a):
+    cfg = load_config()
+    name = cfg.get("user") or server_state(cfg)[0]
+    url = f"{cfg['host']}/user/{urllib.parse.quote(name)}/ssh/"
+    ws = WebSocket(url, {"Authorization": "token " + cfg["token"]})
+    out = sys.stdout.buffer
+
+    def pump_down():
+        try:
+            while True:
+                data = ws.recv()
+                if data is None:
+                    break
+                out.write(data)
+                out.flush()
+        except (EOFError, OSError):
+            pass
+        os._exit(0)
+
+    def keepalive():
+        # Cloudflare drops a websocket idle for ~100 s; an idle shell would die.
+        while True:
+            time.sleep(25)
+            try:
+                ws.send(9, b"k")
+            except OSError:
+                return
+
+    threading.Thread(target=pump_down, daemon=True).start()
+    threading.Thread(target=keepalive, daemon=True).start()
+    fd = sys.stdin.fileno()
+    while True:
+        data = os.read(fd, 65536)
+        if not data:
+            break
+        ws.send(2, data)
+    try:
+        ws.send(8, struct.pack("!H", 1000))
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="zai", description="Control your ZAI GPU server.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("login", help="save host + API token")
+    s.add_argument("host", nargs="?")
+    s.add_argument("--token", help="token (default: prompt)")
+    s.set_defaults(fn=cmd_login)
+
+    sub.add_parser("status", help="server state, balance, running cost").set_defaults(fn=cmd_status)
+    sub.add_parser("balance", help="print your balance").set_defaults(fn=cmd_balance)
+    sub.add_parser("sizes", help="sizes, prices, free GPUs, templates").set_defaults(fn=cmd_sizes)
+
+    s = sub.add_parser("start", help="start your server")
+    s.add_argument("--size", help="size slug (zai sizes); default: the hub's default")
+    s.add_argument("--template", help="template slug; default: the size's default")
+    s.add_argument("--wait", action="store_true", help="wait until it is ready")
+    s.add_argument("--timeout", type=int, default=600)
+    s.set_defaults(fn=cmd_start)
+
+    sub.add_parser("stop", help="stop your server (stops the charge)").set_defaults(fn=cmd_stop)
+
+    s = sub.add_parser("url", help="URL of JupyterLab, or of a port in your server")
+    s.add_argument("port", nargs="?", type=int)
+    s.set_defaults(fn=cmd_url)
+
+    s = sub.add_parser("ssh-config", help="print an ~/.ssh/config block")
+    s.add_argument("--alias", default="zai")
+    s.set_defaults(fn=cmd_ssh_config)
+
+    sub.add_parser("ssh-proxy", help=argparse.SUPPRESS).set_defaults(fn=cmd_ssh_proxy)
+
+    a = p.parse_args(argv)
+    try:
+        a.fn(a)
+    except ZaiError as e:
+        print(f"zai: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

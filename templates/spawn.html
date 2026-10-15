@@ -12,7 +12,7 @@
     <div>
       <div class="z-eyebrow">{% if for_user and user.name != for_user.name %}Starting a server for {{ for_user.name }}{% else %}Start your server{% endif %}</div>
       <h1>Choose a size</h1>
-      <p>There are 7 GPU slices for the whole team, and one is yours only while your server runs. If today's work never touches CUDA, pick CPU-only and leave a slice for someone training.</p>
+      <p>Pick the hardware and what should be installed on it. You're charged by the second while the server runs, and nothing once it stops. If today's work never touches CUDA, CPU only is cheaper and leaves a GPU free.</p>
     </div>
   </div>
 
@@ -30,7 +30,7 @@
     </div>
   </form>
 
-  <p class="z-empty">Servers stop on their own after 60 minutes idle. Everything in your home directory is kept; anything in <code>/tmp</code> or in memory is not.</p>
+  <p class="z-empty">Servers stop on their own after 60 minutes idle, which also stops the charge. Everything in your home directory is kept; anything in <code>/tmp</code> or in memory is not. Prices and your balance are on your <a href="{{ base_url }}account">account page</a>.</p>
 </div>
 {% endblock main %}
 
