@@ -29,7 +29,8 @@ echo "==> platform layer (billing, sizes, templates, API) and the zai CLI"
 python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" hub-ext/catalog.yaml \
   || { echo "hub-ext/catalog.yaml is not valid YAML"; exit 1; }
 kubectl -n jupyterhub create configmap hub-zai \
-  --from-file=hub-ext/zai_platform.py --from-file=hub-ext/zai_2fa.py --from-file=hub-ext/catalog.yaml \
+  --from-file=hub-ext/zai_platform.py --from-file=hub-ext/zai_2fa.py \
+  --from-file=hub-ext/zai_caimex.py --from-file=hub-ext/catalog.yaml \
   ${ZAI_EXTRA_CATALOG:+--from-file=$ZAI_EXTRA_CATALOG} \
   --from-file=zai=cli/zai --dry-run=client -o yaml | kubectl apply -f -
 
@@ -62,6 +63,22 @@ kubectl -n jupyterhub create secret generic hub-extras \
   --dry-run=client -o yaml | kubectl apply -f -
 fi
 
+# Optional: Caimex accounts and Open Caimex (docs/CAIMEX.md). Like the other
+# secrets, a run without the values keeps what is already there. The hub reads
+# these only at start; the platform checksum below does not see them, so
+# restart the hub after changing them.
+if [ -n "${CAIMEX_SERVICE_PASSWORD:-}" ]; then
+    kubectl -n jupyterhub create secret generic caimex-provision \
+        --from-literal=api-url="${CAIMEX_API_URL:-}" \
+        --from-literal=web-url="${CAIMEX_WEB_URL:-}" \
+        --from-literal=org-id="${CAIMEX_ORG_ID:-}" \
+        --from-literal=email="${CAIMEX_SERVICE_EMAIL:-}" \
+        --from-literal=password="$CAIMEX_SERVICE_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
+elif kubectl -n jupyterhub get secret caimex-provision >/dev/null 2>&1; then
+    echo "note: CAIMEX_SERVICE_PASSWORD unset - keeping the existing caimex-provision secret"
+else
+    echo "note: CAIMEX_SERVICE_PASSWORD unset - users will not get Caimex accounts"
+fi
 # Optional S3-compatible object storage. Absent -> `spaces` reports it is not
 # configured and notebooks start normally.
 if [ -n "${S3_ENDPOINT:-}" ]; then
@@ -81,7 +98,7 @@ helm repo update jupyterhub
 # The hub reads catalog.yaml and the module only at startup. Hashing them into
 # a pod annotation makes helm roll the hub exactly when they change. Running
 # servers are unaffected by a hub restart; the API is down for ~30 s.
-ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
+ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
 helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
   -f charts/jupyterhub-values.yaml ${EXTRA_VALUES:+-f $EXTRA_VALUES} \

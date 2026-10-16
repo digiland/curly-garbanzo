@@ -84,7 +84,11 @@
                     data-tip="Used to let you know when your account is approved, and so an administrator can reach you if something needs sorting out. It is never shared.">?</button>
           </label>
           <input id="email_input" class="z-input" type="email" name="email" value="{{ email }}" autocomplete="email" required>
+          {% if caimex_on is defined and caimex_on %}
+          <span class="hint">Your first sign-in also creates your Caimex account with this email and the password you choose here. Caimex will email you to confirm the address; you can ignore its invitation email, which is already accepted for you.</span>
+          {% else %}
           <span class="hint">Only used to tell you when your account is approved.</span>
+          {% endif %}
         </div>
         {% endif %}
         <div class="z-field">

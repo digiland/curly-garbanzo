@@ -105,6 +105,23 @@ hub:
           name: hub-extras
           key: recaptcha-secret
           optional: true
+    # Optional: a Caimex account for each user, and one-click Open Caimex
+    # (hub-ext/zai_caimex.py, docs/CAIMEX.md). Off unless all five are set.
+    CAIMEX_API_URL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: api-url, optional: true}
+    CAIMEX_WEB_URL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: web-url, optional: true}
+    CAIMEX_ORG_ID:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: org-id, optional: true}
+    CAIMEX_SERVICE_EMAIL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: email, optional: true}
+    CAIMEX_SERVICE_PASSWORD:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: password, optional: true}
   config:
     JupyterHub:
       authenticator_class: nativeauthenticator.NativeAuthenticator
@@ -262,6 +279,10 @@ hub:
       # Optional authenticator-app sign-in, /hub/account/2fa (hub-ext/zai_2fa.py).
       import zai_2fa
       zai_2fa.configure(c)
+      # Optional Caimex account and Open Caimex (hub-ext/zai_caimex.py); does
+      # nothing unless the CAIMEX_ settings are present.
+      import zai_caimex
+      zai_caimex.configure(c)
 
     04-agents-route: |
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,
