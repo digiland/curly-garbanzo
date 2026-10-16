@@ -11,8 +11,30 @@
 {% set show_caimex = caimex_on is defined and caimex_on %}
 
 {% block main %}
+<style>
+  .z-request { display: grid; grid-template-columns: minmax(9rem, 16rem) 1fr; gap: .4rem 1rem; margin: .75rem 0 .25rem; }
+  .z-request dt { color: var(--z-muted); font-weight: 600; }
+  .z-request dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .z-table tr.z-request-row td { padding-top: 0; }
+  .z-table tr.has-request td { border-bottom: 0; }
+  details summary { cursor: pointer; }
+  @media (max-width: 40rem) { .z-request { grid-template-columns: 1fr; gap: .1rem; } .z-request dd { margin-bottom: .5rem; } }
+</style>
 {% set pending = users | rejectattr('is_authorized') | list %}
 {% set active  = users | selectattr('is_authorized') | list %}
+{# Set by hub-ext/zai_access.py: what each person wrote on the request-access
+   form. Absent without the module, and None for an account that predates the
+   form or was not created through it. #}
+{% set show_request = access_request is defined %}
+{% macro request_details(req) %}
+<details>
+  <summary>{{ req.who }} · {{ req.type }} · about {{ req.gpu_hours }} GPU hours a month</summary>
+  <dl class="z-request">
+    {% for label, value in req.rows %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+    <dt>Submitted</dt><dd>{{ req.submitted }}</dd>
+  </dl>
+</details>
+{% endmacro %}
 <div class="z-page">
   <div class="z-page-head">
     <div>
@@ -31,7 +53,8 @@
         <thead><tr><th>Username</th>{% if ask_email %}<th>Email</th>{% endif %}<th></th></tr></thead>
         <tbody>
           {% for u in pending %}
-          <tr id="{{ u.username }}">
+          {% set req = access_request(u.username) if show_request else none %}
+          <tr id="{{ u.username }}" {% if show_request %}class="has-request"{% endif %}>
             <td><strong>{{ u.username }}</strong></td>
             {% if ask_email %}<td><a href="mailto:{{ u.email }}">{{ u.email }}</a></td>{% endif %}
             <td class="actions">
@@ -39,6 +62,13 @@
               <a class="z-btn is-sm is-danger" role="button" href="{{ base_url }}discard/{{ u.username }}">Discard</a>
             </td>
           </tr>
+          {% if show_request %}
+          <tr class="z-request-row">
+            <td colspan="{{ 3 if ask_email else 2 }}">
+              {% if req %}{{ request_details(req) }}{% else %}<span class="z-empty">No request form on file.</span>{% endif %}
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>
@@ -56,7 +86,8 @@
         <thead><tr><th>Username</th>{% if ask_email %}<th>Email</th>{% endif %}<th>2FA</th>{% if show_caimex %}<th>Caimex account</th>{% endif %}<th></th></tr></thead>
         <tbody>
           {% for u in active %}
-          <tr id="{{ u.username }}">
+          {% set req = access_request(u.username) if show_request else none %}
+          <tr id="{{ u.username }}" {% if req %}class="has-request"{% endif %}>
             <td><strong>{{ u.username }}</strong></td>
             {% if ask_email %}<td>{% if u.email %}<a href="mailto:{{ u.email }}">{{ u.email }}</a>{% else %}<span class="z-empty">—</span>{% endif %}</td>{% endif %}
             <td>{% if u.has_2fa %}<span class="z-pill is-ok">on</span>{% else %}<span class="z-pill">off</span>{% endif %}</td>
@@ -84,6 +115,11 @@
               <a class="z-btn is-sm is-quiet" role="button" href="{{ base_url }}authorize/{{ u.username }}">Revoke</a>
             </td>
           </tr>
+          {% if req %}
+          <tr class="z-request-row">
+            <td colspan="{{ 3 + (1 if ask_email else 0) + (1 if show_caimex else 0) }}">{{ request_details(req) }}</td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>
