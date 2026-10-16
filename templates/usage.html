@@ -1,0 +1,84 @@
+{% extends "page.html" %}
+{# Served by UsageHandler (charts/jupyterhub-values.yaml, extraConfig
+   03-usage-accounting) at /hub/usage, admins only. `users` is one row per
+   person with gpu_secs / cpu_secs / sessions / last / running for the chosen
+   window; `recent` is the last 50 sessions. Helpers hours(), when(), dur()
+   format seconds and timestamps. #}
+
+{% block title %}Usage · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">Administrator</div>
+      <h1>Usage</h1>
+      <p>Hours a server was running per person. GPU hours are time holding one of the 7 MIG slices, whether or not the GPU was busy. Recording began when accounting was switched on; nothing before that is known.</p>
+    </div>
+    <div class="z-seg" role="tablist" aria-label="Period">
+      {% for key, label in periods.items() %}
+        <a href="{{ base_url }}usage?period={{ key }}" class="{% if key == period %}is-on{% endif %}" {% if key == period %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="z-stats">
+    <div class="z-stat"><div class="label">GPU hours</div><div class="value">{{ hours(total_gpu) }}<small>h</small></div></div>
+    <div class="z-stat"><div class="label">CPU-only hours</div><div class="value">{{ hours(total_cpu) }}<small>h</small></div></div>
+    <div class="z-stat"><div class="label">People active</div><div class="value">{{ users | length }}</div></div>
+    <div class="z-stat"><div class="label">Running now</div><div class="value">{{ running }}</div></div>
+  </div>
+
+  <section class="z-card">
+    <h2>By person — {{ periods[period] | lower }}</h2>
+    {% if users %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Username</th><th class="num">GPU hours</th><th class="num">CPU-only hours</th><th class="num">Sessions</th><th>Last active</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td><strong>{{ u.username }}</strong>{% if u.running %} <span class="z-pill is-ok">running</span>{% endif %}</td>
+            <td class="num"><strong>{{ hours(u.gpu_secs) }}</strong>
+              <div class="z-bar"><i style="width: {{ (100 * u.gpu_secs / max_gpu) | round(1) if max_gpu else 0 }}%"></i></div></td>
+            <td class="num">{{ hours(u.cpu_secs) }}</td>
+            <td class="num">{{ u.sessions }}</td>
+            <td>{{ when(u.last) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="z-empty" style="margin-top:.9rem">Times are UTC. <a href="{{ base_url }}usage?period={{ period }}&amp;format=csv">Download as CSV</a></p>
+    {% else %}
+      <p class="z-empty">No sessions in this period yet. A row appears the first time someone starts a server.</p>
+    {% endif %}
+  </section>
+
+  <section class="z-card">
+    <h2>Recent sessions</h2>
+    {% if recent %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Username</th><th>Server size</th><th>Started</th><th>Stopped</th><th class="num">Duration</th></tr></thead>
+        <tbody>
+          {% for s in recent %}
+          <tr>
+            <td><strong>{{ s.username }}</strong></td>
+            <td>{{ s.profile or '—' }}{% if s.gpu %} <span class="z-pill">GPU</span>{% endif %}{% if s.worker %} <span class="z-pill">Serverless</span>{% endif %}</td>
+            <td>{{ when(s.started) }}</td>
+            <td>{% if s.running %}<span class="z-pill is-ok">running</span>{% else %}{{ when(s.stopped) }}{% endif %}</td>
+            <td class="num">{{ dur(s.secs) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="z-empty">Nothing recorded yet.</p>
+    {% endif %}
+  </section>
+
+  <p class="z-empty">To stop a running server or free a GPU slice, use the <a href="{{ base_url }}admin">admin panel</a>.</p>
+</div>
+{% endblock %}

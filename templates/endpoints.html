@@ -1,0 +1,244 @@
+{% extends "page.html" %}
+{# Served by EndpointsPage (hub-ext/zai_platform.py) at /hub/endpoints. Data
+   comes from the serverless gateway on the user's behalf: `endpoints` (each
+   with .health and .jobs), `spend` = micros this month per endpoint id.
+   Admins see everyone's and get the create / delete forms. #}
+
+{% block title %}Endpoints · ZAI Notebooks{% endblock %}
+
+{% macro ago(ms) -%}
+  {%- set s = ((now_ms - ms) / 1000) | int -%}
+  {%- if s < 60 %}{{ s }}s ago{% elif s < 3600 %}{{ s // 60 }}m ago{% else %}{{ s // 3600 }}h {{ (s % 3600) // 60 }}m ago{% endif -%}
+{%- endmacro %}
+{% macro secs(ms) -%}
+  {%- if ms is none %}—{% elif ms < 1000 %}{{ ms }} ms{% elif ms < 60000 %}{{ '%.1f' | format(ms / 1000) }} s{% else %}{{ ms // 60000 }}m {{ (ms % 60000) // 1000 }}s{% endif -%}
+{%- endmacro %}
+{% set pill = {"COMPLETED": "is-ok", "IN_PROGRESS": "is-gold", "IN_QUEUE": "", "FAILED": "is-bad",
+               "TIMED_OUT": "is-bad", "CANCELLED": "is-warn"} %}
+
+{% block main %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">Serverless</div>
+      <h1>Endpoints</h1>
+      <p>Your code, run on demand: send a job, a worker starts with your handler, and it stops when the queue is empty.
+        You pay per second while a worker runs, cold start and idle time included. The API is RunPod's.</p>
+    </div>
+    <a class="z-btn is-quiet is-sm" href="{{ base_url }}endpoints">Refresh</a>
+  </div>
+
+  {% if message %}<p class="z-alert is-ok" role="status">{{ message }}</p>{% endif %}
+  {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
+  {% if unavailable %}<p class="z-alert is-warn" role="alert">{{ unavailable }}</p>{% endif %}
+
+  {% if not endpoints and not unavailable %}
+  <section class="z-card">
+    <h2>No endpoints yet</h2>
+    <p class="z-empty" style="text-align:left">An endpoint is a folder in your home with a <code>handler.py</code>, run on the GPU size you choose.
+      Write and test the handler in your server, then ask an administrator to create the endpoint
+      {%- if user.admin %} (below){% endif %}.</p>
+    <div class="z-pre">import zai_serverless as runpod     # or: import runpod
+
+def handler(job):
+    return {"echo": job["input"]}
+
+runpod.serverless.start({"handler": handler})</div>
+    <p class="z-empty" style="text-align:left;margin-top:.75rem">Test it in a terminal on your server with <code>python handler.py --test_input '{"input": {"hi": 1}}'</code>.</p>
+  </section>
+  {% endif %}
+
+  {% for e in endpoints %}
+  {% set h = e.health %}
+  {% set busy = h.workers.running + h.workers.idle + h.workers.initializing %}
+  {% set url = "https://" ~ public_host ~ "/v2/" ~ e.id %}
+  <section class="z-card z-ep" id="ep-{{ e.id }}">
+    <div class="z-ep-head">
+      <div>
+        <h2>{{ e.name }} <span class="z-ep-id">{{ e.id }}</span></h2>
+        <div class="z-ep-meta">
+          {{ size_name(e.size) }}{% set z = catalog.size(e.size) %}{% if z %} · {{ rate_str(z.rate) }}{% endif %}
+          · {{ e.template }} · up to {{ e.maxWorkers }} worker{{ 's' if e.maxWorkers != 1 }}
+          · stops after {{ e.idleTimeout }}s idle · jobs time out after {{ e.executionTimeout }}s
+          {% if user.admin %} · owner <strong>{{ e.owner }}</strong>{% endif %}
+        </div>
+      </div>
+      {% if h.lastError %}<span class="z-pill is-bad">error</span>
+      {% elif h.workers.running %}<span class="z-pill is-gold">working</span>
+      {% elif busy %}<span class="z-pill is-ok">warm</span>
+      {% else %}<span class="z-pill">scaled to zero</span>{% endif %}
+    </div>
+
+    {% if h.lastError %}<p class="z-alert is-bad">{{ h.lastError }}</p>{% endif %}
+
+    <div class="z-stats">
+      <div class="z-stat"><div class="label">Queued</div><div class="value">{{ h.jobs.inQueue }}</div></div>
+      <div class="z-stat"><div class="label">Running</div><div class="value">{{ h.jobs.inProgress }}</div></div>
+      <div class="z-stat"><div class="label">Workers</div><div class="value">{{ busy }}<small>/ {{ e.maxWorkers }}</small></div></div>
+      <div class="z-stat"><div class="label">Spent this month</div><div class="value">{{ money(spend.get(e.id, 0)) }}</div></div>
+    </div>
+
+    <details class="z-ep-section" {% if loop.first %}open{% endif %}>
+      <summary>Call it</summary>
+      <p>Send <code>Authorization: Bearer &lt;token&gt;</code> with an <a href="{{ base_url }}token">API token</a>. <code>/runsync</code> waits up to 90 s, then returns the job id for <code>/status</code>.</p>
+      <div class="z-ep-copy"><div class="z-pre" id="curl-{{ e.id }}">curl -X POST {{ url }}/runsync \
+  -H "Authorization: Bearer $ZAI_TOKEN" -H "Content-Type: application/json" \
+  -d '{"input": {"prompt": "hello"}}'</div><button type="button" class="z-btn is-quiet is-sm" data-copy="curl-{{ e.id }}">Copy</button></div>
+      <div class="z-ep-copy"><div class="z-pre" id="py-{{ e.id }}">import os, requests
+
+r = requests.post("{{ url }}/runsync",
+                  headers={"Authorization": f"Bearer {os.environ['ZAI_TOKEN']}"},
+                  json={"input": {"prompt": "hello"}}, timeout=120)
+print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-copy="py-{{ e.id }}">Copy</button></div>
+      <p class="z-ep-small">Also: <code>/run</code> (returns at once), <code>/status/&lt;job&gt;</code>, <code>/stream/&lt;job&gt;</code>, <code>/cancel/&lt;job&gt;</code>, <code>/purge-queue</code>, <code>/health</code>. Handler: <code>~/{{ e.workdir }}</code>, run as <code>{{ e.command }}</code>{% if e.env %}, with {{ e.env | join(', ') }} set{% endif %}.</p>
+    </details>
+
+    <details class="z-ep-section">
+      <summary>Send a test job</summary>
+      <form method="post" action="{{ base_url }}endpoints" class="z-ep-run">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="run">
+        <input type="hidden" name="endpoint" value="{{ e.id }}">
+        <div class="z-field">
+          <label for="in-{{ e.id }}">Input (JSON)</label>
+          <textarea id="in-{{ e.id }}" name="input" class="z-input" rows="3" maxlength="100000" spellcheck="false">{"prompt": "hello"}</textarea>
+          <span class="hint">Sent as <code>{"input": …}</code>. Charged like any other job.</span>
+        </div>
+        <div><button type="submit" class="z-btn is-sm">Send job</button></div>
+      </form>
+    </details>
+
+    <details class="z-ep-section" {% if e.jobs %}open{% endif %}>
+      <summary>Recent jobs{% if e.jobs %} · {{ e.jobs | length }}{% endif %}</summary>
+      {% if e.jobs %}
+      <div class="z-table-wrap">
+        <table class="z-table">
+          <thead><tr><th>Job</th><th>Status</th><th>Sent</th><th class="num">Waited</th><th class="num">Ran</th><th></th></tr></thead>
+          <tbody>
+            {% for j in e.jobs %}
+            <tr>
+              <td><code title="{{ j.id }}">{{ j.id[:8] }}</code></td>
+              <td><span class="z-pill {{ pill.get(j.status, '') }}">{{ j.status | lower | replace('_', ' ') }}</span>
+                {% if j.get('error') %}<div class="z-ep-err">{{ j.error }}</div>{% endif %}</td>
+              <td>{{ ago(j.createdAt) }}</td>
+              <td class="num">{{ secs(j.get('delayTime')) }}</td>
+              <td class="num">{{ secs(j.get('executionTime')) }}</td>
+              <td class="num">
+                {% if j.status in ("IN_QUEUE", "IN_PROGRESS") %}
+                <form method="post" action="{{ base_url }}endpoints">
+                  <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+                  <input type="hidden" name="action" value="cancel">
+                  <input type="hidden" name="endpoint" value="{{ e.id }}">
+                  <input type="hidden" name="job" value="{{ j.id }}">
+                  <button type="submit" class="z-btn is-danger is-sm">Cancel</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="z-ep-small">Finished jobs are kept 30 minutes (1 minute for <code>/runsync</code>), then deleted with their input and output.</p>
+      {% else %}
+      <p class="z-ep-small">No jobs in the last 30 minutes.</p>
+      {% endif %}
+      <div class="z-ep-actions">
+        {% if h.jobs.inQueue %}
+        <form method="post" action="{{ base_url }}endpoints">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <input type="hidden" name="action" value="purge">
+          <input type="hidden" name="endpoint" value="{{ e.id }}">
+          <button type="submit" class="z-btn is-quiet is-sm">Remove {{ h.jobs.inQueue }} queued job{{ 's' if h.jobs.inQueue != 1 }}</button>
+        </form>
+        {% endif %}
+        {% if user.admin %}
+        <form method="post" action="{{ base_url }}endpoints" data-confirm="Delete {{ e.name }}? Queued and running jobs are cancelled. The handler files are kept.">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="endpoint" value="{{ e.id }}">
+          <button type="submit" class="z-btn is-danger is-sm">Delete endpoint</button>
+        </form>
+        {% endif %}
+      </div>
+    </details>
+  </section>
+  {% endfor %}
+
+  {% if user.admin and not unavailable %}
+  <section class="z-card" id="create">
+    <h2>Create an endpoint</h2>
+    <p class="z-ep-small" style="margin-top:0">For a customer, in their home. They must have started a server once, so that their home volume exists. Their credit pays for the workers.</p>
+    <form method="post" action="{{ base_url }}endpoints#create" class="z-topup">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <input type="hidden" name="action" value="create">
+      <div class="z-field">
+        <label for="c-owner">Owner</label>
+        <select id="c-owner" name="owner" class="z-input" required>
+          {% for u in users %}<option {% if u == form.get('owner') %}selected{% endif %}>{{ u }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="z-field">
+        <label for="c-name">Name</label>
+        <input id="c-name" name="name" class="z-input" maxlength="63" placeholder="whisper" value="{{ form.get('name', '') }}" required>
+      </div>
+      <div class="z-field">
+        <label for="c-size">Size</label>
+        <select id="c-size" name="size" class="z-input">
+          {% for z in catalog.sizes %}<option value="{{ z.slug }}" {% if z.slug == form.get('size') %}selected{% endif %}>{{ z.name }} · {{ rate_str(z.rate) }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="z-field">
+        <label for="c-template">Template</label>
+        <select id="c-template" name="template" class="z-input">
+          {% for t in catalog.templates %}<option value="{{ t.slug }}" {% if t.slug == form.get('template') %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="z-field">
+        <label for="c-dir">Folder in their home</label>
+        <input id="c-dir" name="workdir" class="z-input" maxlength="200" placeholder="endpoints/whisper" value="{{ form.get('workdir', '') }}" required>
+      </div>
+      <div class="z-field">
+        <label for="c-cmd">Command</label>
+        <input id="c-cmd" name="command" class="z-input" maxlength="1000" value="{{ form.get('command') or 'python handler.py' }}">
+      </div>
+      <div class="z-field">
+        <label for="c-mw">Max workers</label>
+        <input id="c-mw" name="max_workers" class="z-input" type="number" min="1" max="{{ catalog.sv_max_workers }}" value="{{ form.get('max_workers') or 1 }}">
+      </div>
+      <div class="z-field">
+        <label for="c-idle">Idle stop (s)</label>
+        <input id="c-idle" name="idle_timeout" class="z-input" type="number" min="5" max="3600" value="{{ form.get('idle_timeout') or 30 }}">
+      </div>
+      <div class="z-field">
+        <label for="c-exec">Job timeout (s)</label>
+        <input id="c-exec" name="execution_timeout" class="z-input" type="number" min="1" max="86400" value="{{ form.get('execution_timeout') or 600 }}">
+      </div>
+      <div class="z-field z-ep-wide">
+        <label for="c-env">Environment (optional)</label>
+        <textarea id="c-env" name="env" class="z-input" rows="2" spellcheck="false" placeholder="MODEL=openai/whisper-large-v3">{{ form.get('env', '') }}</textarea>
+        <span class="hint">One <code>NAME=value</code> per line. Values are never shown again, only names.</span>
+      </div>
+      <div><button type="submit" class="z-btn is-block">Create</button></div>
+    </form>
+  </section>
+  {% endif %}
+</div>
+{% endblock main %}
+
+{% block script %}
+{{ super() }}
+<script>
+  document.querySelectorAll("[data-copy]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var text = document.getElementById(b.dataset.copy).textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1500);
+      });
+    });
+  });
+  document.querySelectorAll("form[data-confirm]").forEach(function (f) {
+    f.addEventListener("submit", function (ev) { if (!confirm(f.dataset.confirm)) ev.preventDefault(); });
+  });
+</script>
+{% endblock %}

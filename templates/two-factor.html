@@ -1,0 +1,82 @@
+{% extends "page.html" %}
+{# Served by TwoFactorHandler (hub-ext/zai_2fa.py) at /hub/account/2fa.
+   `info` is the UserInfo row (None for an account without a password);
+   `setup` shows the QR code for info.otp_secret, `qr` is inline SVG. #}
+
+{% block title %}Two-factor sign-in · ZAI Notebooks{% endblock %}
+
+{% block stylesheet %}
+{{ super() }}
+<style>
+  /* Scanners want dark modules on light, whatever the page theme. */
+  .z-qr { background: #fff; border-radius: 8px; padding: .5rem; width: 13rem; max-width: 100%; margin: .25rem 0; }
+  .z-qr svg { display: block; width: 100%; height: auto; }
+  .z-secret { font-family: var(--z-mono); font-size: 1rem; letter-spacing: .05em; overflow-wrap: anywhere; }
+</style>
+{% endblock stylesheet %}
+
+{% block main %}
+<div class="z-auth-outer">
+<main class="z-auth">
+  {% include "zai-panel.html" %}
+  <section class="z-auth-card">
+    <div>
+      <div class="z-eyebrow">{{ user.name }}</div>
+      <h2>Two-factor sign-in</h2>
+    </div>
+    {% if message %}<p class="z-alert is-ok" role="status">{{ message }}</p>{% endif %}
+    {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
+
+    {% if info is none %}
+      <p>This account doesn't sign in with a password, so there is nothing to protect with a code.</p>
+
+    {% elif info.has_2fa %}
+      <p><span class="z-pill is-ok">On</span> Sign-in asks for a 6-digit code from your authenticator app.</p>
+      <form action="{{ base_url }}account/2fa" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="disable">
+        <div class="z-field">
+          <label for="password_input">Password</label>
+          <input id="password_input" class="z-input" type="password" name="password" autocomplete="current-password" required>
+        </div>
+        <div class="z-field">
+          <label for="code_input">Code from your app</label>
+          <input id="code_input" class="z-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required>
+        </div>
+        <input type="submit" class="z-btn is-block is-danger" value="Turn off two-factor sign-in">
+      </form>
+      <p class="aside">Lost your phone? An administrator can turn it off for you.</p>
+
+    {% elif setup %}
+      <ol class="z-steps">
+        <li><div>Open an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others) and add an account by scanning this code.
+          {% if qr %}<div class="z-qr" role="img" aria-label="QR code for your authenticator app">{{ qr | safe }}</div>{% endif %}
+          <div>{% if qr %}Can't scan it? {% endif %}Enter this key instead, as a time-based account:</div>
+          <div class="z-secret">{{ spaced }}</div></div></li>
+        <li><div>Enter the 6-digit code the app now shows.</div></li>
+      </ol>
+      <form action="{{ base_url }}account/2fa" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="enable">
+        <div class="z-field">
+          <label for="code_input">Code from your app</label>
+          <input id="code_input" class="z-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus>
+        </div>
+        <input type="submit" class="z-btn is-block" value="Turn on two-factor sign-in">
+      </form>
+      <p class="aside">Nothing changes until the code is accepted. <a href="{{ base_url }}account/2fa">Cancel</a></p>
+
+    {% else %}
+      <p><span class="z-pill">Off</span> Add a second step to sign-in: after your password, a 6-digit code from an authenticator app on your phone. Someone who learns your password still can't get in.</p>
+      <form action="{{ base_url }}account/2fa" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="start">
+        <input type="submit" class="z-btn is-block" value="Set up two-factor sign-in">
+      </form>
+      <p class="aside">API tokens you've made keep working; they don't ask for a code.</p>
+    {% endif %}
+    <p class="aside"><a href="{{ base_url }}account">Back to Account</a></p>
+  </section>
+</main>
+</div>
+{% endblock main %}

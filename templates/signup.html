@@ -46,10 +46,12 @@
         <li><div><strong>Sign in</strong><span>Your account was approved automatically.</span></div></li>
         <li><div><strong>Pick a server size</strong><span>GPU for anything that touches CUDA; CPU-only otherwise.</span></div></li>
         <li><div><strong>Open Welcome.ipynb</strong><span>It's in your home directory and checks your GPU live.</span></div></li>
+        <li><div><strong>Try caimex</strong><span>File → New → Terminal, then <code>caimex</code>: an AI assistant for your whole project, already signed in.</span></div></li>
         {% else %}
         <li><div><strong>An administrator approves your account</strong><span>Approval is manual, so this usually takes a little while. Nothing to do until then.</span></div></li>
         <li><div><strong>Sign in with the details you just chose</strong><span>Until you're approved, signing in says the account is waiting.</span></div></li>
-        <li><div><strong>Pick a server size and start</strong><span>Your JupyterLab is ready in about fifteen seconds.</span></div></li>
+        <li><div><strong>Pick a server size and start</strong><span>Your JupyterLab is ready in about fifteen seconds. <code>Welcome.ipynb</code> in your home directory walks you through it.</span></div></li>
+        <li><div><strong>Try caimex when you're in</strong><span>File → New → Terminal, then <code>caimex</code>: an AI assistant for your whole project, already signed in.</span></div></li>
         {% endif %}
       </ol>
       {% if two_factor_auth_user %}
@@ -59,13 +61,17 @@
 
     {% else %}
       <h2>Request access</h2>
+      <p class="intro">Choose the username and password you'll sign in with. An administrator approves each request before first sign-in.</p>
       {% if alert %}
         <p class="z-alert is-bad" role="alert">{{ result_message | replace("Something went wrong!\n", "") }}</p>
       {% endif %}
       <form action="{{ post_url }}" method="post" role="form">
         <input type="hidden" name="_xsrf" value="{{ xsrf }}">
         <div class="z-field">
-          <label for="username_input">Username</label>
+          <label for="username_input">Username
+            <button type="button" class="z-tip" aria-label="About usernames"
+                    data-tip="Your username becomes the name of your server and your home directory, so it has to be a plain lowercase name: letters, digits and hyphens only, starting with a letter. It can't be changed later.">?</button>
+          </label>
           <input id="username_input" class="z-input" type="text" name="username" value="{{ username }}"
                  autocapitalize="off" autocorrect="off" autocomplete="username" autofocus required
                  pattern="[a-z][a-z0-9-]{2,30}" title="Lowercase letters, digits or hyphens; 3–31 characters; starts with a letter">
@@ -73,13 +79,19 @@
         </div>
         {% if ask_email %}
         <div class="z-field">
-          <label for="email_input">Email</label>
+          <label for="email_input">Email
+            <button type="button" class="z-tip" aria-label="About your email"
+                    data-tip="Used to let you know when your account is approved, and so an administrator can reach you if something needs sorting out. It is never shared.">?</button>
+          </label>
           <input id="email_input" class="z-input" type="email" name="email" value="{{ email }}" autocomplete="email" required>
           <span class="hint">Only used to tell you when your account is approved.</span>
         </div>
         {% endif %}
         <div class="z-field">
-          <label for="password_input">Password</label>
+          <label for="password_input">Password
+            <button type="button" class="z-tip" aria-label="About passwords"
+                    data-tip="At least 12 characters. A few unrelated words are easier to remember and stronger than a short mix of symbols. Common passwords are rejected, and sign-in locks for 15 minutes after 5 failed attempts.">?</button>
+          </label>
           <div class="z-input-wrap">
             <input id="password_input" class="z-input" type="password" name="signup_password"
                    autocapitalize="off" autocorrect="off" autocomplete="new-password" minlength="12" required>
@@ -105,7 +117,7 @@
         {% if recaptcha_key %}<div class="g-recaptcha" data-sitekey="{{ recaptcha_key }}"></div>{% endif %}
         <input type="submit" id="signup_submit" class="z-btn is-block" value="Request access" {% if tos %}disabled{% endif %}>
       </form>
-      <p class="aside">Accounts are approved by an administrator before first sign-in. Already have one? <a href="{{ base_url }}login">Sign in</a>.</p>
+      <p class="aside">Already have an account? <a href="{{ base_url }}login">Sign in</a>.</p>
     {% endif %}
   </section>
 </main>

@@ -85,4 +85,34 @@ RUN chmod 0755 /usr/local/bin/spaces \
                /usr/local/bin/before-notebook.d/20-welcome.sh \
                /usr/local/bin/before-notebook.d/30-objectstore.sh
 
+# ---------------------------------------------------------------------------
+# Remote access: SSH and web ports, both through the hub's own URL and auth.
+#
+# jupyter-server-proxy exposes any port in the server at /user/<name>/proxy/<p>/
+# (owner, or holders of the owner's token, only) and, via raw_socket_proxy,
+# bridges /user/<name>/ssh/ to an sshd it starts on demand. That gives SSH,
+# scp and VS Code Remote-SSH through the Cloudflare tunnel with no new ingress.
+# The stock host keys are deleted: they would be identical in every container
+# built from this image; zai-sshd generates a per-user key instead.
+# Kept at the end of the file so the expensive layers above stay cached.
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server \
+ && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
+ && pip install --no-cache-dir jupyter-server-proxy==4.6.0
+COPY zai-sshd /usr/local/bin/zai-sshd
+COPY 40-zai.sh /usr/local/bin/before-notebook.d/40-zai.sh
+COPY zai /opt/zai
+RUN chmod 0755 /usr/local/bin/zai-sshd /usr/local/bin/before-notebook.d/40-zai.sh \
+ && chmod -R a+rX /opt/zai \
+ && printf '%s\n' \
+      '# Servers are merged with .update() so template images can append their own.' \
+      'c.ServerProxy.servers.update({"ssh": {' \
+      '    "command": ["/usr/local/bin/zai-sshd", "{port}"],' \
+      '    "raw_socket_proxy": True,' \
+      '    "timeout": 20,' \
+      '    "launcher_entry": {"enabled": False},' \
+      '}})' \
+      >> /etc/jupyter/jupyter_server_config.py
+
 USER ${NB_UID}

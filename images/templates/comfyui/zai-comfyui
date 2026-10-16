@@ -1,0 +1,16 @@
+#!/bin/bash
+# Started by jupyter-server-proxy on the first visit to /user/<name>/comfyui/.
+# Extra ComfyUI flags (e.g. --lowvram) can be set in COMFYUI_ARGS.
+set -eu
+base="$HOME/ComfyUI"
+mkdir -p "$base"/{models/checkpoints,models/loras,models/vae,input,output,user,custom_nodes}
+[ -f "$base/README.txt" ] || cat > "$base/README.txt" <<TXT
+Put checkpoints in models/checkpoints (and loras, vae, ... alongside).
+For example, from a terminal in JupyterLab:
+  cd ~/ComfyUI/models/checkpoints && wget -c <url-of-a-.safetensors-file>
+Your home directory has a size limit; a large model may not fit.
+Generated images are in output/.
+TXT
+exec /opt/comfyui/venv/bin/python /opt/comfyui/main.py \
+    --listen 127.0.0.1 --port "$1" --base-directory "$base" --disable-auto-launch \
+    ${COMFYUI_ARGS:-}

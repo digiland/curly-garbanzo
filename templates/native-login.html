@@ -54,12 +54,13 @@
           <button id="eye" class="z-eye" type="button" aria-label="Show password" aria-pressed="false">SHOW</button>
         </div>
       </div>
-      {% if two_factor_auth %}
+      {# Always shown: 2FA is a per-user choice (hub-ext/zai_2fa.py), and the
+         page can't know who is signing in until the form is sent. #}
       <div class="z-field">
-        <label for="2fa_input">Two-factor code</label>
-        <input id="2fa_input" class="z-input" type="text" name="2fa" autocapitalize="off" autocorrect="off" placeholder="Leave empty if you don't use 2FA">
+        <label for="2fa_input">Authenticator code</label>
+        <input id="2fa_input" class="z-input" type="text" name="2fa" inputmode="numeric" autocomplete="one-time-code"
+               autocapitalize="off" autocorrect="off" maxlength="7" placeholder="Only if you turned on two-factor sign-in">
       </div>
-      {% endif %}
       <input type="submit" id="login_submit" class="z-btn is-block" value="Sign in">
     </form>
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Recreate NVIDIA MIG layout (7 x 1g.18gb)
+Description=Recreate NVIDIA MIG layout (/etc/default/nvidia-mig-layout, default 7 x 1g.18gb)
 Documentation=file:///usr/local/bin/mig-setup.sh
 # Normal dependencies: guarantees sysinit/udev have run and /dev/nvidia* exist.
 After=basic.target nvidia-persistenced.service

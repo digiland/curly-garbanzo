@@ -3,5 +3,6 @@
 # disagree about their own internals.
 FROM quay.io/jupyterhub/k8s-hub:4.4.2
 USER root
-RUN pip install --no-cache-dir jupyterhub-nativeauthenticator==1.2.0
+# qrcode: the setup QR on /hub/account/2fa (pure Python; SVG needs no Pillow).
+RUN pip install --no-cache-dir jupyterhub-nativeauthenticator==1.2.0 qrcode==7.4.2
 USER 1000

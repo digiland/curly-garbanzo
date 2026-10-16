@@ -23,6 +23,24 @@ hub:
       scopes:
         - self
         - shares!user
+        # The serverless API (/v2/) accepts only tokens with this scope. Tokens
+        # made at /hub/token inherit it; OAuth tokens handed to shared servers
+        # and apps do not, so those cannot act on the visitor's endpoints.
+        - custom:serverless
+    # The serverless gateway (k8s/serverless.yaml) opens, closes and bills GPU
+    # workers through /hub/api/zai/workers/*, and may do nothing else. The
+    # custom scope is defined by hub-ext/zai_platform.py.
+    serverless:
+      name: serverless
+      services: [serverless]
+      scopes:
+        - custom:zai-workers
+
+  # Registering the service makes the chart generate its API token, stored in
+  # the `hub` secret as hub.services.serverless.apiToken -- the gateway reads
+  # it from there, so there is no extra secret to manage.
+  services:
+    serverless: {}
 
   image:
     name: local/k8s-hub-native      # custom: stock hub + jupyterhub-nativeauthenticator
@@ -35,11 +53,25 @@ hub:
     - name: custom-templates
       configMap:
         name: hub-custom-templates
+    - name: zai-platform
+      configMap:
+        name: hub-zai
   extraVolumeMounts:
     - name: custom-templates
       mountPath: /etc/jupyterhub/custom-templates
       readOnly: true
+    - name: zai-platform
+      mountPath: /etc/jupyterhub/zai
+      readOnly: true
   extraEnv:
+    # The hub's Endpoints page calls the serverless gateway's hub-only port with
+    # the service token the chart generates for hub.services.serverless.
+    ZAI_GATEWAY_TOKEN:
+      valueFrom:
+        secretKeyRef:
+          name: hub
+          key: hub.services.serverless.apiToken
+          optional: true
     # Optional. When set, users whose signup email matches SELF_APPROVAL_DOMAINS
     # are emailed an approval link instead of waiting on a human. Unset = every
     # signup waits for manual approval at /hub/authorize.
@@ -97,7 +129,9 @@ hub:
       # The username becomes the pod name AND the PVC name, so it has to be a
       # safe DNS label. Without this, signup accepts names that produce an
       # unspawnable server and a confusing failure much later.
-      username_pattern: '^[a-z][a-z0-9-]{2,30}$'
+      # No "--" and no trailing "-": KubeSpawner hashes such names into
+      # forms like abc---2211b74f, which another signup could then claim.
+      username_pattern: '^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,30}$'
   extraConfig:
     # JupyterHub 5.5's LoginHandler.render_template intercepts error.html on POST
     # and routes it into _render(**ns). NativeAuthenticator overrides _render(), which
@@ -105,6 +139,33 @@ hub:
     # rendering raises and the user gets a bare, body-less HTTP 403 instead of
     # "Login form invalid or expired. Try again."  Bypass the interception: render
     # error pages through the base implementation, which honours sync=True.
+    01-nativeauth-get-csrf: |
+      # NativeAuthenticator approves, revokes and discards users on a plain
+      # GET (/hub/authorize/<name>, /hub/discard/<name>), which JupyterHub does
+      # not XSRF-check on navigation: a link on any site, opened by a logged-in
+      # admin, would approve the attacker's pending signup. Accept these only
+      # from the hub's own pages (or a URL the admin typed).
+      from nativeauthenticator.handlers import ToggleAuthorizationHandler as _NAToggle, DiscardHandler as _NADiscard
+      from tornado import web as _web
+      from urllib.parse import urlparse as _urlparse
+      def _same_origin_only(cls):
+          _get = cls.get
+          async def get(self, *a, **kw):
+              site = self.request.headers.get("Sec-Fetch-Site")
+              if site is not None:
+                  ok = site in ("same-origin", "none")
+              else:   # older browsers: fall back to Referer
+                  ref = self.request.headers.get("Referer", "")
+                  ok = bool(ref) and _urlparse(ref).netloc == self.request.host
+              if not ok:
+                  raise _web.HTTPError(403, "Use the buttons on the Approve users page.")
+              r = _get(self, *a, **kw)
+              if hasattr(r, "__await__"):
+                  r = await r
+              return r
+          cls.get = get
+      _same_origin_only(_NAToggle)
+      _same_origin_only(_NADiscard)
     01-nativeauth-render-fix: |
       from jupyterhub.handlers.base import BaseHandler as _JHBase
       from nativeauthenticator.handlers import LoginHandler as _NALoginHandler
@@ -185,14 +246,56 @@ hub:
           c.NativeAuthenticator.recaptcha_key = _rk
           c.NativeAuthenticator.recaptcha_secret = _rs
 
+    # The pay-as-you-go layer: sizes and templates from hub-ext/catalog.yaml,
+    # prepaid credit, capacity checks, and the /hub/account, /hub/billing,
+    # /hub/usage pages and /hub/api/zai/ endpoints. The code lives in
+    # hub-ext/zai_platform.py, mounted from the hub-zai ConfigMap, so changing
+    # prices or the module is a `scripts/05-jupyterhub.sh`, not an image rebuild.
+    # It replaces singleuser.profileList, which is why that key is gone below.
+    # Sessions and the money ledger are in /srv/jupyterhub/usage.sqlite, the
+    # same file (and table) the earlier usage accounting wrote, so history kept.
+    03-zai-platform: |
+      import sys
+      sys.path.insert(0, "/etc/jupyterhub/zai")
+      import zai_platform
+      zai_platform.configure(c)
+      # Optional authenticator-app sign-in, /hub/account/2fa (hub-ext/zai_2fa.py).
+      import zai_2fa
+      zai_2fa.configure(c)
+
+    04-agents-route: |
+      # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,
+      # which forwards to that user's caimex server. The hub keeps this route in the
+      # proxy, re-adding it after a proxy restart. Each agent does its own auth.
+      c.Proxy.extra_routes = {
+          "/agents/": "http://agents-router.agents.svc.cluster.local",
+          # Serverless endpoints (k8s/serverless.yaml). Until the gateway is
+          # deployed, /v2/ answers 503 and nothing else is affected.
+          "/v2/": "http://serverless-gateway.jupyterhub.svc.cluster.local:8080",
+      }
+
 proxy:
   service:
     type: ClusterIP                 # servicelb is disabled; cloudflared reaches this in-cluster
 
 singleuser:
+  # Notebooks run customer code. The chart's default "any public IP" egress
+  # includes this node's own public address, so the kubelet (10250), the
+  # Kubernetes API (6443) and sshd were reachable from inside a notebook (the
+  # firewall only closes them to the internet). Same rule as serverless
+  # workers and agents: the internet, minus private ranges, cloud metadata
+  # and the node.
+  networkPolicy:
+    egressAllowRules:
+      nonPrivateIPs: false
+    egress:
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 129.212.180.103/32]
   image:
-    name: local/pytorch-caimex       # pytorch-notebook + caimex CLI preinstalled
-    tag: cuda12
+    name: local/pytorch-caimex       # pytorch-notebook + caimex CLI, SSH, port proxy
+    tag: cuda12-r3                   # the default; templates in hub-ext/catalog.yaml pick their own
     pullPolicy: Never                # local image in k3s containerd, not a registry
   extraEnv:
     # Shared caimex credential. Read at start by
@@ -204,6 +307,11 @@ singleuser:
           name: caimex-credentials
           key: api-key
     CAIMEX_MODEL: "caimex/Caimex2/deepseek-ai/DeepSeek-V4-Flash"
+    # Fills the hostname into ~/.zai/README.md (SSH, ports, API instructions).
+    ZAI_PUBLIC_HOST: "notebooks.futurezim.com"
+    # `import zai_serverless` in a notebook, to try a handler before it becomes
+    # an endpoint. The module is the serverless-runtime ConfigMap mounted below.
+    PYTHONPATH: /opt/zai-runtime
     # S3-compatible object storage (DigitalOcean Spaces). Optional: when the
     # secret is absent these are unset and 30-objectstore.sh no-ops, so notebooks
     # still start. Present -> rclone remote + ~/spaces mount, boto3/aws-cli work
@@ -219,7 +327,14 @@ singleuser:
     AWS_SECRET_ACCESS_KEY:
       valueFrom: {secretKeyRef: {name: object-storage, key: secret-key, optional: true}}
   extraPodConfig:
-    runtimeClassName: nvidia        # required so the MIG device is injected
+    runtimeClassName: nvidia        # required so the MIG device is injected (dropped for CPU-only sizes)
+    # Replaces KubeSpawner's pod securityContext, so fsGroup is repeated. The
+    # runtime's default seccomp profile blocks user namespaces (unshare -Ur)
+    # and other kernel surface customer code has no use for.
+    securityContext:
+      fsGroup: 100
+      fsGroupChangePolicy: OnRootMismatch   # don't re-permission the whole home (incl. ~/.ssh keys) on every start
+      seccompProfile: {type: RuntimeDefault}
   # Shared spaces, mounted into every server. Backed by hostPath because this is
   # a single node -- there is nothing to schedule across, and ReadWriteMany is
   # not available from local-path.
@@ -237,6 +352,8 @@ singleuser:
       # it for IPC and die with a bare "bus error" when it fills.
       - name: dshm
         emptyDir: {medium: Memory, sizeLimit: 2Gi}
+      - name: zai-runtime           # created by scripts/12-serverless.sh; optional until then
+        configMap: {name: serverless-runtime, optional: true}
     extraVolumeMounts:
       - name: shared-datasets
         mountPath: /home/jovyan/shared
@@ -245,38 +362,15 @@ singleuser:
         mountPath: /home/jovyan/team
       - name: dshm
         mountPath: /dev/shm
+      - name: zai-runtime
+        mountPath: /opt/zai-runtime
+        readOnly: true
   startTimeout: 600
   defaultUrl: /lab
 
-  # Spawn-time choice. The CPU profile exists to protect the scarcest resource:
-  # there are only 7 MIG slices, and without this option every login consumes
-  # one even for work that never touches a GPU.
-  profileList:
-    - display_name: "GPU — Standard"
-      description: "1 MIG slice (18 GB VRAM), 12 GB RAM, 2 CPU. Start here."
-      default: true
-      kubespawner_override:
-        cpu_limit: 2
-        cpu_guarantee: 0.5
-        mem_limit: "12G"
-        mem_guarantee: "1G"
-        extra_resource_limits: {nvidia.com/gpu: "1"}
-    - display_name: "GPU — Large"
-      description: "1 MIG slice (18 GB VRAM), 24 GB RAM, 4 CPU. For large datasets held in host memory."
-      kubespawner_override:
-        cpu_limit: 4
-        cpu_guarantee: 1
-        mem_limit: "24G"
-        mem_guarantee: "2G"
-        extra_resource_limits: {nvidia.com/gpu: "1"}
-    - display_name: "CPU only — no GPU"
-      description: "8 GB RAM, 2 CPU, no GPU. Leaves a MIG slice free for someone who needs it."
-      kubespawner_override:
-        cpu_limit: 2
-        cpu_guarantee: 0.5
-        mem_limit: "8G"
-        mem_guarantee: "1G"
-        extra_resource_limits: {}
+  # Sizes and templates (KubeSpawner profile_list) are generated from
+  # hub-ext/catalog.yaml by extraConfig 03-zai-platform; do not set
+  # profileList here -- it would be overwritten.
 
 # Idle culling is mandatory: 7 slices total, an idle notebook holds one forever.
 cull:

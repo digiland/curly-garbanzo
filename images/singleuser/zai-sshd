@@ -1,0 +1,51 @@
+#!/bin/bash
+# SSH into a running server. jupyter-server-proxy starts this on demand, the
+# first time someone connects to /user/<name>/ssh/, and bridges that websocket
+# to the port it passes in. Nothing listens until then.
+#
+# Runs as the notebook user, not root: sshd can only log in as the account it
+# runs under, which is exactly the isolation wanted. Auth is two layers -- the
+# websocket needs a JupyterHub token (checked by the singleuser server before
+# this process ever sees a byte), and sshd then needs a key in
+# ~/.ssh/authorized_keys.
+set -eu
+port="$1"
+ssh_dir="$HOME/.ssh"
+mkdir -p "$ssh_dir"
+chmod 700 "$ssh_dir"
+# Host key lives in the home PVC so it survives restarts; a new key on every
+# start would trip "REMOTE HOST IDENTIFICATION HAS CHANGED" for every user.
+[ -f "$ssh_dir/zai_host_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C "zai-host" -f "$ssh_dir/zai_host_ed25519"
+touch "$ssh_dir/authorized_keys"
+# Kubernetes' fsGroup handling can add group rw to everything on the volume;
+# sshd refuses a host key that is not private, so tighten it every start.
+chmod 600 "$ssh_dir/authorized_keys" "$ssh_dir/zai_host_ed25519"
+# StrictModes refuses keys under a group/world-writable home.
+chmod go-w "$HOME" 2>/dev/null || true
+
+cfg="$(mktemp -d)/sshd_config"
+cat > "$cfg" <<CFG
+Port $port
+ListenAddress 127.0.0.1
+HostKey $ssh_dir/zai_host_ed25519
+AuthorizedKeysFile $ssh_dir/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+PermitRootLogin no
+# The home volume is created root-owned and world-writable (local-path), which
+# the user cannot change, so StrictModes would refuse every key. Only one user
+# (uid 1000) exists in this container; ~/.ssh is 700 and the key file 600.
+StrictModes no
+AllowUsers $(id -un)
+PidFile none
+PrintMotd no
+X11Forwarding no
+AllowTcpForwarding yes
+Subsystem sftp internal-sftp
+# A login shell from sshd starts with sshd's minimal PATH, which hides conda,
+# python and caimex. Carry the notebook's environment across.
+SetEnv PATH=$PATH CONDA_DIR=${CONDA_DIR:-/opt/conda} JUPYTERHUB_USER=${JUPYTERHUB_USER:-} LANG=${LANG:-C.UTF-8}
+CFG
+exec /usr/sbin/sshd -D -e -f "$cfg"

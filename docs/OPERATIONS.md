@@ -25,7 +25,24 @@ than the signup that caused it.
 |---|---|
 | `/hub/authorize` | Approve pending signups (nav: **Approve users**) |
 | `/hub/admin` | List users, stop servers (frees a MIG slice), delete users |
+| `/hub/billing` | Balances, add credit after a payment, the ledger; `?format=csv` to export (nav: **Billing**) |
+| `/hub/usage` | GPU / CPU-only hours per user, this month / 30 days / all time; `?format=csv` to export (nav: **Usage**) |
+| `/hub/account` | Anyone: own balance, prices, history, SSH/API instructions (nav: **Account**) |
 | `/hub/change-password` | Anyone changing their own password |
+
+### Usage accounting
+
+`/hub/usage` is fed by `hub-ext/zai_platform.py` (extraConfig `03-zai-platform`,
+which replaced `03-usage-accounting` and keeps its table): a KubeSpawner subclass
+writes one row per server session (user, size, template, GPU, price, start,
+stop) to `/srv/jupyterhub/usage.sqlite` on the hub PVC — next to
+`jupyterhub.sqlite`, so it survives hub restarts and upgrades. The same file
+holds the money ledger behind `/hub/billing`; back it up with the hub database.
+Billing itself is described in [PLATFORM.md](PLATFORM.md#credit-and-billing). "GPU hours" means hours a server *held*
+a MIG slice; it does not know whether the GPU was busy (that needs DCGM +
+Prometheus, see CLUSTER.md). Recording starts when this config is first
+deployed; there is no earlier history. If the hub is down while a pod dies, the
+session is closed when the hub comes back, so it over-counts by the downtime.
 
 ## The admin account is load-bearing — and claimable
 
@@ -61,14 +78,15 @@ Deleting the admin user from `/hub/admin` re-opens this. Don't.
 
 ## Sizing
 
-The box has 235 GB RAM and 7 MIG slices, so the ceiling that matters is
-`7 x mem_limit`, not the total.
+Sizes, their RAM/CPU grants and their prices live in `hub-ext/catalog.yaml`
+(the table below is the shipped default). The box has 235 GB RAM and 7 MIG
+slices, so the ceiling that matters is `7 x mem_limit`, not the total.
 
 | Profile | RAM | CPU | GPU | 7-user worst case |
 |---|---|---|---|---|
-| GPU — Standard | 12 G | 2 | 1 slice | 84 G |
-| GPU — Large | 24 G | 4 | 1 slice | 168 G |
-| CPU only | 8 G | 2 | none | — |
+| GPU · 18 GB (`gpu-18`) | 12 G | 2 | 1 slice | 84 G |
+| GPU · 18 GB, high memory (`gpu-18-highmem`) | 24 G | 4 | 1 slice | 168 G |
+| CPU only (`cpu`) | 8 G | 2 | none | — |
 
 The CPU-only profile exists to protect the scarcest resource. There are seven
 slices and no more; without that option every login consumes one even for work
@@ -147,6 +165,11 @@ with the feature missing.
 core `filebrowser` and `cell-executor` extensions in order to replace them — so
 users get a JupyterLab with no file browser. Server sharing is provided through
 JupyterHub's own `shares!user` scope instead.
+
+Template images (`images/templates/`) build `FROM` the singleuser image, so
+`04-images.sh` rebuilds them after it. Bump `SU_VERSION` and the `image:` tags
+in `hub-ext/catalog.yaml` together when the image changes, so a rollback is a
+catalog edit rather than a rebuild.
 
 After rebuilding:
 

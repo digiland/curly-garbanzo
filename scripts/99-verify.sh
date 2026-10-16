@@ -2,7 +2,10 @@
 # Health check. Run after deploy, and after any reboot.
 set -uo pipefail
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-EXPECT="${MIG_COUNT:-7}"
+# Slice count comes from the layout scripts/11-gpu-layout.sh wrote, so this
+# check follows a re-slice instead of reporting it as a failure.
+[ -f /etc/default/nvidia-mig-layout ] && . /etc/default/nvidia-mig-layout
+EXPECT="${MIG_COUNT:-$(echo "${MIG_LAYOUT:-1g.18gb*7}" | tr ', ' '\n\n' | awk -F'*' 'NF{n+=($2==""?1:$2)} END{print n}')}"
 fail=0
 chk() { printf '  %-42s %s\n' "$1" "$2"; [ "$3" = ok ] || fail=1; }
 
