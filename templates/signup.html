@@ -3,7 +3,16 @@
    handler's: username, email, signup_password, signup_password_confirmation.
    NativeAuthenticator re-renders this same template after the POST with
    `alert` + `result_message`; an alert-info/alert-success result means the
-   account exists, so the form is replaced by a what-happens-next state. #}
+   account exists, so the form is replaced by a what-happens-next state.
+
+   hub-ext/zai_access.py adds `access_form` (the lists and the
+   consent wording), `form` (what the applicant typed, to refill a refused
+   form) and `form_problems`. Without it this is the plain three-field signup.
+   The script below hides sections that do not apply and marks the visible
+   fields (data-required) as required; the server checks every rule again.
+   With scripts off every section shows and only the server checks. #}
+{% set form = form if form is defined else {} %}
+{% set application = access_form if access_form is defined else none %}
 
 {% block title %}Request access · ZAI Notebooks{% endblock %}
 
@@ -28,7 +37,44 @@
     tos.addEventListener('click', function () { submit.disabled = !tos.checked; });
     {% endif %}
   });
+  {% if application %}
+  // Show a section only while it applies. A hidden section's fields are
+  // disabled so the browser neither requires nor sends them.
+  document.addEventListener('DOMContentLoaded', function () {
+    function show(section, on) {
+      section.hidden = !on;
+      section.querySelectorAll('input, select, textarea').forEach(function (el) {
+        el.disabled = !on;
+        if (el.hasAttribute('data-required')) el.required = on;
+      });
+    }
+    var org = document.getElementById('org_fields'), rest = document.getElementById('shared_fields');
+    var types = document.querySelectorAll('input[name="applicant_type"]');
+    var sector = document.getElementById('sector_input'), other = document.getElementById('sector_other_field');
+    if (!org || !rest) return;
+    function update() {
+      var chosen = document.querySelector('input[name="applicant_type"]:checked');
+      show(org, !!chosen && chosen.value === 'organisation');
+      show(rest, !!chosen);
+      if (chosen) show(other, sector.value === 'Other');
+      document.getElementById('full_name_label').textContent =
+        chosen && chosen.value === 'organisation' ? 'Your full name (primary contact)' : 'Your full name';
+    }
+    types.forEach(function (el) { el.addEventListener('change', update); });
+    sector.addEventListener('change', update);
+    update();
+  });
+  {% endif %}
 </script>
+{% if application %}
+<style>
+  .z-form-section { font-size: .78rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; margin: 1.5rem 0 .25rem; padding-top: 1rem; border-top: 1px solid var(--z-line); }
+  .z-choice { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+  .z-choice label { display: flex; gap: .45rem; align-items: center; font-weight: 500; }
+  textarea.z-input { min-height: 6.5rem; resize: vertical; }
+  .z-problems { margin: .5rem 0 0; padding-left: 1.1rem; }
+</style>
+{% endif %}
 {% if recaptcha_key %}<script src="https://www.google.com/recaptcha/api.js" async defer></script>{% endif %}
 {% endblock script %}
 
@@ -63,7 +109,11 @@
       <h2>Request access</h2>
       <p class="intro">Choose the username and password you'll sign in with. An administrator approves each request before first sign-in.</p>
       {% if alert %}
-        <p class="z-alert is-bad" role="alert">{{ result_message | replace("Something went wrong!\n", "") }}</p>
+        <div class="z-alert is-bad" role="alert">{{ result_message | replace("Something went wrong!\n", "") }}
+          {% if form_problems is defined and form_problems %}
+          <ul class="z-problems">{% for problem in form_problems %}<li>{{ problem }}</li>{% endfor %}</ul>
+          {% endif %}
+        </div>
       {% endif %}
       <form action="{{ post_url }}" method="post" role="form">
         <input type="hidden" name="_xsrf" value="{{ xsrf }}">
@@ -72,7 +122,7 @@
             <button type="button" class="z-tip" aria-label="About usernames"
                     data-tip="Your username becomes the name of your server and your home directory, so it has to be a plain lowercase name: letters, digits and hyphens only, starting with a letter. It can't be changed later.">?</button>
           </label>
-          <input id="username_input" class="z-input" type="text" name="username" value="{{ username }}"
+          <input id="username_input" class="z-input" type="text" name="username" value="{{ form.username or username }}"
                  autocapitalize="off" autocorrect="off" autocomplete="username" autofocus required
                  pattern="[a-z][a-z0-9-]{2,30}" title="Lowercase letters, digits or hyphens; 3–31 characters; starts with a letter">
           <span class="hint">Lowercase letters, digits or hyphens, 3–31 characters. It becomes your server's name.</span>
@@ -83,7 +133,7 @@
             <button type="button" class="z-tip" aria-label="About your email"
                     data-tip="Used to let you know when your account is approved, and so an administrator can reach you if something needs sorting out. It is never shared.">?</button>
           </label>
-          <input id="email_input" class="z-input" type="email" name="email" value="{{ email }}" autocomplete="email" required>
+          <input id="email_input" class="z-input" type="email" name="email" value="{{ form.email or email }}" autocomplete="email" required>
           {% if caimex_on is defined and caimex_on %}
           <span class="hint">Your first sign-in also creates your Caimex account with this email and the password you choose here. Caimex will email you to confirm the address; you can ignore its invitation email, which is already accepted for you.</span>
           {% else %}
@@ -108,6 +158,95 @@
           <input id="password_confirmation_input" class="z-input" type="password" name="signup_password_confirmation"
                  autocapitalize="off" autocorrect="off" autocomplete="new-password" minlength="12" required>
         </div>
+        {% if application %}
+        {% macro text(name, label, hint='', type='text', max=none, auto='') %}
+        <div class="z-field">
+          <label for="{{ name }}_input" {% if name == 'full_name' %}id="full_name_label"{% endif %}>{{ label }}</label>
+          <input id="{{ name }}_input" class="z-input" type="{{ type }}" name="{{ name }}" value="{{ form[name] or '' }}"
+                 {% if max %}maxlength="{{ max }}"{% endif %} {% if auto %}autocomplete="{{ auto }}"{% endif %} data-required>
+          {% if hint %}<span class="hint">{{ hint }}</span>{% endif %}
+        </div>
+        {% endmacro %}
+        {% macro long(name, label) %}
+        <div class="z-field">
+          <label for="{{ name }}_input">{{ label }}</label>
+          <textarea id="{{ name }}_input" class="z-input" name="{{ name }}" maxlength="1000" data-required>{{ form[name] or '' }}</textarea>
+        </div>
+        {% endmacro %}
+
+        <div class="z-form-section">About you</div>
+        <div class="z-field">
+          <span style="font-weight:600;font-size:.875rem">Are you applying as an individual or an organisation?</span>
+          <div class="z-choice" role="radiogroup">
+            <label><input type="radio" name="applicant_type" value="individual" required {% if form.applicant_type == 'individual' %}checked{% endif %}> Individual</label>
+            <label><input type="radio" name="applicant_type" value="organisation" required {% if form.applicant_type == 'organisation' %}checked{% endif %}> Organisation</label>
+          </div>
+        </div>
+
+        <div id="org_fields">
+          <div class="z-form-section">Your organisation</div>
+          {{ text('org_name', 'Legal / operating name', max=160, auto='organization') }}
+          {{ text('org_description', 'What the organisation does, in one line', max=200) }}
+          <div class="z-field">
+            <label for="org_type_input">Organisation type</label>
+            <select id="org_type_input" class="z-input" name="org_type" data-required>
+              <option value="">Choose one</option>
+              {% for option in application.org_types %}<option {% if form.org_type == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+            </select>
+          </div>
+          {{ text('org_registration', 'Registration / incorporation number', max=60) }}
+          {{ text('org_founded', 'Date founded / incorporated', type='date') }}
+          {{ text('contact2_name', 'Secondary contact: name', hint='Someone else at the organisation we can reach.', max=120) }}
+          {{ text('contact2_email', 'Secondary contact: email', type='email') }}
+          {{ text('contact2_phone', 'Secondary contact: phone', hint='With the country code, for example +263 77 123 4567.', type='tel') }}
+        </div>
+
+        <div id="shared_fields">
+          {{ text('full_name', 'Your full name', max=120, auto='name') }}
+          {{ text('phone', 'Phone', hint='With the country code, for example +263 77 123 4567.', type='tel', auto='tel') }}
+          {{ text('country', 'Country', hint='Where you, or the organisation, are based.', max=80, auto='country-name') }}
+
+          <div class="z-form-section">Your project</div>
+          <div class="z-field">
+            <label for="sector_input">Sector</label>
+            <select id="sector_input" class="z-input" name="sector" data-required>
+              <option value="">Choose one</option>
+              {% for option in application.sectors %}<option {% if form.sector == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+            </select>
+          </div>
+          <div id="sector_other_field">
+            {{ text('sector_other', 'Which sector?', max=80) }}
+          </div>
+          {{ text('project_name', 'Product or project name', max=120) }}
+          {{ long('problem', 'What problem are you solving?') }}
+          {{ long('current_solution', 'How is it solved today, without your work?') }}
+          {{ long('approach', 'How do you intend to solve it?') }}
+
+          <div class="z-form-section">What you expect to use</div>
+          <div class="z-field">
+            <label for="gpu_hours_input">Roughly how many GPU hours a month?</label>
+            <input id="gpu_hours_input" class="z-input" type="number" name="gpu_hours" value="{{ form.gpu_hours or '' }}" min="1" max="100000" step="1" inputmode="numeric" data-required>
+            <span class="hint">An estimate, to help us plan capacity. You pay only for what you use, from prepaid credit. One server left on all month is about 730 hours.</span>
+          </div>
+          <div class="z-field">
+            <label for="gpu_size_input">Which size do you expect to use most?</label>
+            <select id="gpu_size_input" class="z-input" name="gpu_size" data-required>
+              <option value="">Choose one</option>
+              {% for value, label in application.gpu_sizes.items() %}<option value="{{ value }}" {% if form.gpu_size == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <span class="hint">The sizes you can start a server with. Their hourly prices are on the start page.</span>
+          </div>
+          <div class="z-field">
+            <label for="duration_months_input">How many months do you need access for?</label>
+            <input id="duration_months_input" class="z-input" type="number" name="duration_months" value="{{ form.duration_months or '' }}" min="1" max="60" step="1" inputmode="numeric" data-required>
+          </div>
+
+          <label class="z-field" style="flex-direction:row;gap:.6rem;align-items:flex-start;margin-top:1.25rem">
+            <input type="checkbox" name="consent" value="yes" data-required style="margin-top:.25rem" {% if form.consent == 'yes' %}checked{% endif %}>
+            <span>{{ application.consent }}</span>
+          </label>
+        </div>
+        {% endif %}
         {% if two_factor_auth %}
         <label class="z-field" style="flex-direction:row;gap:.6rem;align-items:center">
           <input type="checkbox" id="2fa" name="2fa" value="2fa"> Set up two-factor authentication

@@ -283,6 +283,10 @@ hub:
       # nothing unless the CAIMEX_ settings are present.
       import zai_caimex
       zai_caimex.configure(c)
+      # The request-access form (hub-ext/zai_access.py). After zai_platform:
+      # it offers the catalog's sizes.
+      import zai_access
+      zai_access.configure(c)
 
     04-agents-route: |
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,
