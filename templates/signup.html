@@ -135,7 +135,7 @@
           </label>
           <input id="email_input" class="z-input" type="email" name="email" value="{{ form.email or email }}" autocomplete="email" required>
           {% if caimex_on is defined and caimex_on %}
-          <span class="hint">Your first sign-in also creates your Caimex account with this email and the password you choose here. Caimex will email you to confirm the address; you can ignore its invitation email, which is already accepted for you.</span>
+          <span class="hint">Your first sign-in also creates your Caimex account with this email and the password you choose here. Caimex will email you to confirm the address; you can ignore its invitation email, which is already accepted for you.{% if caimex_allowance is defined and caimex_allowance %} ZAI covers your first ${{ caimex_allowance }} of Caimex use; after that you use your own credit in your personal Caimex workspace.{% endif %}</span>
           {% else %}
           <span class="hint">Only used to tell you when your account is approved.</span>
           {% endif %}

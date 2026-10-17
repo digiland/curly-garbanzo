@@ -36,6 +36,8 @@ REPO = os.path.dirname(HERE)
 VALUES = yaml.safe_load(open(os.path.join(REPO, "charts", "jupyterhub-values.yaml")))
 
 import zai_caimex  # noqa: E402  (hub-ext is this file's own directory)
+# Not a secret, but restored around each test like the five that are.
+EXTRA_SETTINGS = ("CAIMEX_FREE_ALLOWANCE_USD", "CAIMEX_ALLOWANCE_SWEEP_SECONDS")
 SETTINGS = ("CAIMEX_API_URL", "CAIMEX_WEB_URL", "CAIMEX_ORG_ID",
             "CAIMEX_SERVICE_EMAIL", "CAIMEX_SERVICE_PASSWORD")
 SERVICE = {"email": "svc@zai.example", "password": "service-password-1"}
@@ -51,10 +53,15 @@ def template(name):
 
 
 class FakeCaimex:
-    """The four Caimex calls the hub makes, with the real API's behaviour."""
+    """The Caimex calls the hub makes, with the real API's behaviour."""
 
     def __init__(self):
         self.calls = []          # (what, detail), in order, accepted calls only
+        # The organisation's members, as GET .../members returns them. Money
+        # comes back as strings, as Caimex's Decimal fields do.
+        self.members = []
+        self.can_set_caps = True         # False: the service account is not an Admin
+        self.cap_failures = set()        # member ids whose cap update fails
         self.accounts = {}       # email -> {"password", "member", "mfa", "name"}
         self.service_login_ok = True
         self.service_token = "service-token-1"
@@ -113,12 +120,55 @@ class FakeCaimex:
                 fake.accounts[b["email"]] = {
                     "password": b["password"], "name": b.get("full_name"),
                     "member": b.get("invite_token") == "invite:" + b["email"]}
+                if fake.accounts[b["email"]]["member"]:
+                    fake.add_member(b["email"])
                 self.set_status(201)
                 self.finish({"access_token": "register-token:" + b["email"], "user": {}})
 
+        class Members(web.RequestHandler):
+            def get(self, org):
+                if self.request.headers.get("Authorization") != "Bearer " + fake.service_token:
+                    self.set_status(401)
+                    return self.finish({"detail": "Invalid or expired token"})
+                fake.calls.append(("members", org))
+                self.finish({"organization_id": org, "members": fake.members})
+
+        class Entitlements(web.RequestHandler):
+            def patch(self, org, member_id):
+                if self.request.headers.get("Authorization") != "Bearer " + fake.service_token:
+                    self.set_status(401)
+                    return self.finish({"detail": "Invalid or expired token"})
+                if not fake.can_set_caps:
+                    self.set_status(403)
+                    return self.finish({"detail": "Your organization role does not allow this (billing.manage)"})
+                if member_id in fake.cap_failures:
+                    self.set_status(500)
+                    return self.finish({"detail": "internal error"})
+                member = next((m for m in fake.members if m["id"] == member_id), None)
+                if member is None:
+                    self.set_status(404)
+                    return self.finish({"detail": "Member not found"})
+                b = json.loads(self.request.body)
+                fake.calls.append(("cap", (member["email"], b)))
+                if "spend_limit" in b:
+                    member["spend_limit"] = b["spend_limit"]
+                member["spend_period"] = b.get("spend_period", member["spend_period"])
+                if b.get("reset_spend_used"):
+                    member["spend_used"] = "0"
+                self.finish(member)
+
         self.app = web.Application([
             (r"/api/auth/login", Login), (r"/api/auth/register", Register),
-            (r"/api/organizations/([^/]+)/invitations", Invite)])
+            (r"/api/organizations/([^/]+)/invitations", Invite),
+            (r"/api/organizations/([^/]+)/members", Members),
+            (r"/api/organizations/([^/]+)/members/([^/]+)/entitlements", Entitlements)])
+
+    def add_member(self, email, role="member", spend_limit=None, spend_used="0", user_id=None):
+        member = {"id": "member-%d" % (len(self.members) + 1), "user_id": user_id or "user:" + email,
+                  "email": email, "role": role, "status": "active", "spend_limit": spend_limit,
+                  "spend_used": spend_used, "spend_period": "lifetime"}
+        self.members.append(member)
+        return member
 
 
 class FakeHandler:
@@ -178,7 +228,9 @@ class CaimexCase(unittest.IsolatedAsyncioTestCase):
                "CAIMEX_ORG_ID": "org-1", "CAIMEX_SERVICE_EMAIL": SERVICE["email"],
                "CAIMEX_SERVICE_PASSWORD": SERVICE["password"]}
         env.update(self.settings or {})
-        self._old_env = {k: os.environ.get(k) for k in SETTINGS}
+        self._old_env = {k: os.environ.get(k) for k in SETTINGS + EXTRA_SETTINGS}
+        for key in EXTRA_SETTINGS:
+            os.environ.pop(key, None)
         os.environ.update(env)
 
         NativeAuthenticator.authenticate = _AUTHENTICATE
@@ -588,6 +640,188 @@ class TemplateVariables(unittest.TestCase):
         self.assertEqual(page_vars["kept"], 1)     # other modules' variables survive
 
 
+class Allowance(CaimexCase):
+    settings = {"CAIMEX_FREE_ALLOWANCE_USD": "5"}
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        # Setting up the hub started the every-minute check. These tests run
+        # each pass themselves, so stop it rather than race it.
+        if self.ns["_cx_cap"]["task"] is not None:
+            self.ns["_cx_cap"]["task"].cancel()
+            self.ns["_cx_cap"]["task"] = None
+        self.ns["_cx_grants"].create(self.db.get_bind(), checkfirst=True)
+
+    async def sweep(self):
+        return await self.ns["_cx_cap_sweep"](self.db)
+
+    def member(self, email):
+        return next(m for m in self.caimex.members if m["email"] == email)
+
+    def granted(self):
+        return sorted((r.caimex_user_id, r.amount) for r in
+                      self.db.execute(self.ns["_cx_grants"].select()).fetchall())
+
+    async def test_an_uncapped_member_gets_a_fresh_five_dollars_for_life(self):
+        self.caimex.add_member("ann@zai.example", spend_used="3.10")     # already spent some
+        self.assertEqual(await self.sweep(), 1)
+        ann = self.member("ann@zai.example")
+        self.assertEqual((ann["spend_limit"], ann["spend_period"], ann["spend_used"]),
+                         ("5.00", "lifetime", "0"))
+        self.assertIn(("cap", ("ann@zai.example", {
+            "spend_limit": "5.00", "spend_period": "lifetime", "reset_spend_used": True})),
+            self.caimex.calls)
+        self.assertEqual(self.granted(), [("user:ann@zai.example", "5.00")])
+
+    async def test_owners_and_admins_are_never_capped(self):
+        self.caimex.add_member("owner@zai.example", role="owner")
+        self.caimex.add_member("boss@zai.example", role="admin")
+        self.assertEqual(await self.sweep(), 0)
+        self.assertIsNone(self.member("owner@zai.example")["spend_limit"])
+        self.assertIsNone(self.member("boss@zai.example")["spend_limit"])
+
+    async def test_other_staff_roles_are_capped(self):
+        self.caimex.add_member("people@zai.example", role="people_admin")
+        self.caimex.add_member("money@zai.example", role="billing_admin")
+        self.assertEqual(await self.sweep(), 2)
+
+    async def test_a_cap_already_there_is_left_alone(self):
+        self.caimex.add_member("vip@zai.example", spend_limit="1000.00", spend_used="12.00")
+        self.assertEqual(await self.sweep(), 0)
+        vip = self.member("vip@zai.example")
+        self.assertEqual((vip["spend_limit"], vip["spend_used"]), ("1000.00", "12.00"))
+
+    async def test_the_allowance_is_given_once(self):
+        self.caimex.add_member("ann@zai.example")
+        await self.sweep()
+        self.caimex.members.clear()                                       # she leaves...
+        self.caimex.add_member("ann@zai.example", user_id="user:ann@zai.example")  # ...and rejoins
+        self.caimex.calls.clear()
+        self.assertEqual(await self.sweep(), 1)
+        self.assertEqual(self.member("ann@zai.example")["spend_limit"], "0.00")
+        self.assertIn(("cap", ("ann@zai.example", {"spend_limit": "0.00", "spend_period": "lifetime"})),
+                      self.caimex.calls)
+        self.assertEqual(self.granted(), [("user:ann@zai.example", "5.00")])
+
+    async def test_a_second_pass_changes_nothing(self):
+        self.caimex.add_member("ann@zai.example")
+        await self.sweep()
+        self.caimex.calls.clear()
+        self.assertEqual(await self.sweep(), 0)
+        self.assertEqual([c[0] for c in self.caimex.calls], ["members"])
+
+    async def test_without_admin_rights_nobody_is_recorded_and_it_retries(self):
+        self.caimex.add_member("ann@zai.example")
+        self.caimex.can_set_caps = False
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertEqual(await self.sweep(), 0)
+        self.assertIn("could not cap ann@zai.example: HTTP 403", "\n".join(logs.output))
+        self.assertEqual(self.granted(), [])
+        self.caimex.can_set_caps = True
+        self.assertEqual(await self.sweep(), 1)
+        self.assertEqual(self.member("ann@zai.example")["spend_limit"], "5.00")
+
+    async def test_one_failure_does_not_stop_the_others(self):
+        bad = self.caimex.add_member("bad@zai.example")
+        self.caimex.add_member("good@zai.example")
+        self.caimex.cap_failures.add(bad["id"])
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(await self.sweep(), 1)
+        self.assertEqual(self.member("good@zai.example")["spend_limit"], "5.00")
+        self.assertEqual(self.granted(), [("user:good@zai.example", "5.00")])
+
+    async def test_an_unreachable_or_refused_caimex_caps_nobody_and_raises_nothing(self):
+        self.caimex.add_member("ann@zai.example")
+        self.caimex.service_login_ok = False
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertEqual(await self.sweep(), 0)
+        self.assertIn("could not list members", "\n".join(logs.output))
+        self.ns["_CX_URL"] = "http://127.0.0.1:1"
+        self.ns["_cx"]["login_failed"] = None
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(await self.sweep(), 0)
+
+    async def test_a_new_compute_user_is_capped_at_once_not_at_the_next_tick(self):
+        self.ns["_CX_SWEEP_SECONDS"] = 3600        # the regular tick will not come
+        task = asyncio.ensure_future(self.ns["_cx_cap_forever"](self.db))
+        try:
+            for _ in range(100):                   # the first, empty, pass
+                await asyncio.sleep(0.02)
+                if any(c[0] == "members" for c in self.caimex.calls):
+                    break
+            self.add_user("tendai", "tendai-password-1")
+            await self.sign_in("tendai", "tendai-password-1")
+            for _ in range(100):
+                await asyncio.sleep(0.02)
+                if self.member("tendai@zai.example")["spend_limit"] is not None:
+                    break
+            self.assertEqual(self.member("tendai@zai.example")["spend_limit"], "5.00")
+        finally:
+            task.cancel()
+
+    async def test_the_handlers_start_the_check_once(self):
+        started = []
+        self.ns["_cx_cap_forever"] = lambda db: started.append(db) or asyncio.sleep(0)
+        self.ns["_cx_cap"]["task"] = None
+        NativeAuthenticator.get_handlers(self.auth, types.SimpleNamespace(db=self.db))
+        NativeAuthenticator.get_handlers(self.auth, types.SimpleNamespace(db=self.db))
+        self.assertEqual(len(started), 1)
+
+    def test_users_are_told_on_the_login_and_signup_pages(self):
+        self.assertEqual(self.page_vars["caimex_allowance"], "5.00")
+        for name in ("native-login.html", "signup.html"):
+            page = template(name)
+            self.assertIn("caimex_allowance is defined and caimex_allowance", page, name)
+            self.assertIn("personal", page, name)
+
+
+class AllowanceOff(CaimexCase):
+    def test_off_unless_an_amount_is_set(self):
+        self.assertIsNone(self.ns["_CX_ALLOWANCE"])
+        self.assertIsNone(self.page_vars["caimex_allowance"])
+
+    async def test_off_means_no_check_runs(self):
+        self.ns["_cx_cap"]["task"] = None
+        NativeAuthenticator.get_handlers(self.auth, types.SimpleNamespace(db=self.db))
+        self.assertIsNone(self.ns["_cx_cap"]["task"])
+
+
+class SweepInterval(CaimexCase):
+    def test_a_bad_interval_falls_back_to_a_minute_and_the_hub_still_starts(self):
+        os.environ["CAIMEX_ALLOWANCE_SWEEP_SECONDS"] = "1m"
+        with self.assertLogs(level="WARNING") as logs:
+            importlib.reload(zai_caimex).configure(Config())     # must not raise
+        self.assertEqual(zai_caimex._CX_SWEEP_SECONDS, 60.0)
+        self.assertIn("is not a number; using 60", "\n".join(logs.output))
+        os.environ.pop("CAIMEX_ALLOWANCE_SWEEP_SECONDS", None)
+
+
+class Clearing(CaimexCase):
+    settings = {"CAIMEX_FREE_ALLOWANCE_USD": "5"}
+
+    async def test_clearing_a_cap_after_the_allowance_gives_zero_not_unlimited(self):
+        if self.ns["_cx_cap"]["task"] is not None:
+            self.ns["_cx_cap"]["task"].cancel()
+        self.ns["_cx_grants"].create(self.db.get_bind(), checkfirst=True)
+        ann = self.caimex.add_member("ann@zai.example")
+        await self.ns["_cx_cap_sweep"](self.db)
+        ann["spend_limit"] = None                  # an admin clears it in Caimex
+        await self.ns["_cx_cap_sweep"](self.db)
+        self.assertEqual(ann["spend_limit"], "0.00")
+
+
+class AllowanceInvalid(CaimexCase):
+    def test_a_bad_amount_turns_it_off_and_says_so(self):
+        for raw in ("five", "0", "-5", "5000", "0.004", "nan"):
+            with self.subTest(raw=raw):
+                os.environ["CAIMEX_FREE_ALLOWANCE_USD"] = raw
+                with self.assertLogs(level="ERROR") as logs:
+                    importlib.reload(zai_caimex).configure(Config())
+                self.assertIn("caimex allowance is OFF", "\n".join(logs.output))
+                self.assertIsNone(zai_caimex._CX_ALLOWANCE)
+        os.environ.pop("CAIMEX_FREE_ALLOWANCE_USD", None)
+
+
 class Wiring(unittest.TestCase):
     def test_every_setting_is_an_optional_secret(self):
         for name in SETTINGS:
@@ -610,6 +844,9 @@ class Wiring(unittest.TestCase):
         self.assertIn("--from-file=hub-ext/zai_caimex.py", deploy)
         checksum = deploy.split("ZAI_SUM=")[1].split("\n")[0]
         self.assertIn("hub-ext/zai_caimex.py", checksum)   # a change restarts the hub
+
+    def test_the_allowance_ships_at_five_dollars(self):
+        self.assertEqual(VALUES["hub"]["extraEnv"]["CAIMEX_FREE_ALLOWANCE_USD"], "5")
 
     def test_env_example_lists_every_setting(self):
         example = open(os.path.join(REPO, ".env.example")).read()

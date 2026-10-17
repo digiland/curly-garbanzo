@@ -24,9 +24,19 @@ stores a hash). It is used for the calls below and never written anywhere.
                   (templates/caimex.html), or sends the user to the Caimex
                   login when that would not help
 
-The service account (a member of the organisation allowed to invite people,
-two-factor OFF) is needed because only a member can create invitations, and
+The service account (an Admin of the organisation, two-factor OFF) is needed
+because only a member can create invitations and set spending caps, and
 Caimex's organisation endpoints take a sign-in session, not an API key.
+
+The free allowance (CAIMEX_FREE_ALLOWANCE_USD; off when unset). ZAI's wallet
+pays for each member's first few dollars of Caimex, once. A sweep every
+minute lists the organisation's members and gives every member who has no
+spending cap, however they joined, a lifetime cap of the allowance with their
+spend reset to zero. Owners and admins are never capped. A cap that is already
+there, whoever set it, is left alone. Someone who already received the
+allowance and comes back (leaves and rejoins) gets a cap of 0. When the
+allowance is used up, Caimex refuses their requests in ZAI's workspaces; they
+switch to their personal workspace in Caimex and pay their own way there.
 
 Signing in never waits on Caimex and never fails because of it. The outcome is
 recorded in zai_caimex_accounts (hub database), shown on /hub/authorize, and
@@ -35,6 +45,7 @@ has a Caimex account keeps it: the invitation stands for them to accept, and
 the hub leaves their password alone.
 """
 import asyncio, datetime, json, os, time, urllib.parse
+from decimal import Decimal
 
 import sqlalchemy as sa
 from jupyterhub.handlers import BaseHandler
@@ -109,13 +120,14 @@ def _cx_set(db, username, email, status, detail="", auto_login=True):
         db.rollback()
         raise
 
-async def _cx_fetch(path, body, token=None):
+async def _cx_fetch(path, body, token=None, method="POST"):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = HTTPRequest(
-        _CX_URL + path, method="POST", headers=headers,
-        body=json.dumps(body), connect_timeout=5, request_timeout=20)
+        _CX_URL + path, method=method, headers=headers,
+        body=None if method == "GET" else json.dumps(body),
+        connect_timeout=5, request_timeout=20)
     # raise_error=False covers HTTP statuses only; a refused connection,
     # DNS failure or timeout still raises. Report those as 599 too.
     try:
@@ -165,21 +177,26 @@ async def _cx_service_login():
     _cx["login_failed"] = (time.monotonic(), (401, {"detail": why}))
     return _cx["login_failed"][1]
 
-async def _cx_invite(email):
-    """Invite email into the organization as the service account, signing
-    in first if needed and once more if the cached token has expired.
-    Re-inviting a pending address returns the same invitation."""
+async def _cx_service_call(method, path, body=None):
+    """Call Caimex as the service account, signing in first if needed and
+    once more if the cached token has expired."""
     for attempt in (1, 2):
         if not _cx["token"]:
             failure = await _cx_service_login()
             if failure:
                 return failure
-        code, data = await _cx_fetch(
-            f"/api/organizations/{_CX_ORG}/invitations",
-            {"email": email, "role": "member"}, _cx["token"])
+        code, data = await _cx_fetch(path, body, _cx["token"], method=method)
         if code != 401 or attempt == 2:
             return code, data
         _cx["token"] = None
+
+
+async def _cx_invite(email):
+    """Invite email into the organization. Re-inviting a pending address
+    returns the same invitation."""
+    return await _cx_service_call(
+        "POST", f"/api/organizations/{_CX_ORG}/invitations",
+        {"email": email, "role": "member"})
 
 def _cx_keep(username, token):
     _cx_sessions[username] = (token, time.monotonic())
@@ -210,6 +227,7 @@ async def _cx_register(db, username, email, password):
         if reg == 201 and rdata.get("access_token"):
             _cx_set(db, username, email, "created")
             _cx_keep(username, rdata["access_token"])
+            _cx_cap_now()           # they joined uncapped; cap them now
             return True
         if reg != 409:          # 409: the address already has an account
             why = "register: " + _cx_reason(reg, rdata)
@@ -273,6 +291,106 @@ async def _authenticate(self, handler, data):
         _cx_running[username] = task    # the loop only holds a weak reference
         task.add_done_callback(lambda _t, name=username: _cx_running.pop(name, None))
     return username
+
+
+# -- the free allowance ---------------------------------------------------------
+_CX_ALLOWANCE = None              # Decimal dollars, or None when off
+_CX_SWEEP_SECONDS = 60
+_CX_EXEMPT_ROLES = ("owner", "admin")
+
+# Who has had the allowance, by Caimex user id, which survives leaving and
+# rejoining (the member id does not). Never deleted: that is how "once" holds.
+_cx_grants = sa.Table(
+    "zai_caimex_allowances", sa.MetaData(),
+    sa.Column("caimex_user_id", sa.Unicode(64), primary_key=True),
+    sa.Column("email", sa.Unicode(320)),
+    sa.Column("amount", sa.Unicode(32)),
+    sa.Column("granted_at", sa.DateTime))
+_cx_cap = {"task": None, "wake": None}
+
+
+def _cx_money(amount):
+    return str(Decimal(amount).quantize(Decimal("0.01")))
+
+
+def _cx_granted(db):
+    try:
+        return {r[0] for r in db.execute(sa.select(_cx_grants.c.caimex_user_id))}
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _cx_record_grant(db, user_id, email, amount):
+    """Record the first grant; a second for the same account is ignored, so
+    the record always says when the allowance was really given."""
+    try:
+        if db.execute(sa.select(_cx_grants.c.caimex_user_id)
+                      .where(_cx_grants.c.caimex_user_id == user_id)).first():
+            return
+        db.execute(_cx_grants.insert().values(
+            caimex_user_id=user_id, email=email, amount=amount,
+            granted_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+async def _cx_cap_sweep(db):
+    """One pass over the organisation's members: cap everyone who has no cap.
+    Returns how many were capped. Never raises for one member's failure;
+    whoever is not capped this time is tried again next pass."""
+    code, data = await _cx_service_call("GET", f"/api/organizations/{_CX_ORG}/members")
+    if code != 200:
+        get_logger().warning("caimex allowance: could not list members: %s", _cx_reason(code, data))
+        return 0
+    already = _cx_granted(db)
+    capped = 0
+    for m in data.get("members") or []:
+        user_id, member_id = str(m.get("user_id") or ""), m.get("id")
+        if (m.get("role") in _CX_EXEMPT_ROLES or m.get("spend_limit") is not None
+                or not user_id or not member_id):
+            continue
+        again = user_id in already
+        amount = "0.00" if again else _cx_money(_CX_ALLOWANCE)
+        body = {"spend_limit": amount, "spend_period": "lifetime"}
+        if not again:
+            body["reset_spend_used"] = True     # a fresh allowance, whatever came before
+        code, out = await _cx_service_call(
+            "PATCH", f"/api/organizations/{_CX_ORG}/members/{member_id}/entitlements", body)
+        if code != 200:
+            get_logger().warning("caimex allowance: could not cap %s: %s",
+                                 m.get("email", member_id), _cx_reason(code, out))
+            continue
+        if not again:
+            _cx_record_grant(db, user_id, m.get("email", ""), amount)
+        get_logger().info("caimex allowance: %s %s", m.get("email", member_id),
+                          "rejoined, capped at 0" if again else f"capped at {amount} USD")
+        capped += 1
+    return capped
+
+
+def _cx_cap_now():
+    """Run the sweep now rather than at its next tick."""
+    if _cx_cap["wake"] is not None:
+        _cx_cap["wake"].set()
+
+
+async def _cx_cap_forever(db):
+    _cx_cap["wake"] = asyncio.Event()
+    get_logger().info("caimex allowance: %s USD per member, checked every %gs",
+                      _cx_money(_CX_ALLOWANCE), _CX_SWEEP_SECONDS)
+    while True:
+        try:
+            await _cx_cap_sweep(db)
+        except Exception as e:
+            get_logger().error("caimex allowance pass failed: %s", type(e).__name__)
+        try:
+            await asyncio.wait_for(_cx_cap["wake"].wait(), timeout=_CX_SWEEP_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        _cx_cap["wake"].clear()
 
 
 class OpenCaimex(BaseHandler):
@@ -345,6 +463,12 @@ def _get_handlers_cx(self, app):
             _cx["db"] = app.db
         except Exception as e:
             self.log.error("caimex accounts disabled, no status table: %s", e)
+    if _CX_ON and _CX_ALLOWANCE is not None and _cx_cap["task"] is None:
+        try:
+            _cx_grants.create(app.db.get_bind(), checkfirst=True)
+            _cx_cap["task"] = asyncio.ensure_future(_cx_cap_forever(app.db))
+        except Exception as e:
+            self.log.error("caimex allowance disabled, no table: %s", e)
     return handlers + [(r"/caimex", OpenCaimex), (r"/caimex/again", OpenCaimexAgain)]
 
 
@@ -358,6 +482,7 @@ def _cx_status(username):
 
 def configure(c):
     global _CX_URL, _CX_WEB, _CX_ORG, _CX_EMAIL, _CX_PASSWORD, _CX_ON
+    global _CX_ALLOWANCE, _CX_SWEEP_SECONDS
     global _na_authenticate, _na_get_handlers_cx
     _CX_URL = os.environ.get("CAIMEX_API_URL", "").strip().rstrip("/")
     _CX_WEB = os.environ.get("CAIMEX_WEB_URL", "").strip().rstrip("/")
@@ -378,6 +503,26 @@ def configure(c):
             "caimex accounts are OFF: CAIMEX_API_URL and CAIMEX_WEB_URL must be https")
         _CX_ON = False
 
+    raw = os.environ.get("CAIMEX_FREE_ALLOWANCE_USD", "").strip()
+    _CX_ALLOWANCE = None
+    if raw:
+        try:
+            _CX_ALLOWANCE = Decimal(raw)
+            # Caps are whole cents: anything below one would become $0.00.
+            if not Decimal("0.01") <= _CX_ALLOWANCE <= Decimal("1000"):
+                raise ValueError
+        except (ValueError, ArithmeticError):
+            get_logger().error("caimex allowance is OFF: CAIMEX_FREE_ALLOWANCE_USD=%r "
+                               "is not an amount from 0.01 to 1000", raw)
+            _CX_ALLOWANCE = None
+    # A typo here must not stop the hub starting: fall back to a minute.
+    raw = os.environ.get("CAIMEX_ALLOWANCE_SWEEP_SECONDS", "60").strip()
+    try:
+        _CX_SWEEP_SECONDS = max(1.0, float(raw))
+    except ValueError:
+        get_logger().warning("CAIMEX_ALLOWANCE_SWEEP_SECONDS=%r is not a number; using 60", raw)
+        _CX_SWEEP_SECONDS = 60.0
+
     # Wrap the authenticator once, however many times configure() runs.
     if _na_authenticate is None:
         _na_authenticate = NativeAuthenticator.authenticate
@@ -390,5 +535,6 @@ def configure(c):
     # call has to be returned from one.
     tv = dict(c.JupyterHub.get("template_vars", {}) or {})
     tv["caimex_on"] = _CX_ON
+    tv["caimex_allowance"] = _cx_money(_CX_ALLOWANCE) if _CX_ON and _CX_ALLOWANCE else None
     tv["caimex_status"] = lambda user: _cx_status
     c.JupyterHub.template_vars = tv
