@@ -67,6 +67,9 @@
        so this is where existing users need to be told. #}
     {% if caimex_on is defined and caimex_on %}
     <p class="aside">Signing in also sets up your Caimex account with the same email and password, if you do not have one yet. Caimex will email you to confirm your address. It will also send an invitation, which is already accepted for you and can be ignored. After that, <strong>Open Caimex</strong> in the menu takes you there signed in.</p>
+    {% if caimex_allowance is defined and caimex_allowance %}
+    <p class="aside">ZAI covers your first ${{ caimex_allowance }} of Caimex use. When it runs out, switch to your personal workspace in Caimex and add your own credit there to keep going.</p>
+    {% endif %}
     {% endif %}
 
     {% if enable_signup %}

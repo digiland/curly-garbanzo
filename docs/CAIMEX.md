@@ -27,12 +27,14 @@ blocks a sign-in here.
 ## Setup
 
 1. **Create the service account in Caimex.** The hub signs in as this account
-   to send invitations, because Caimex's organization endpoints accept a
-   sign-in session and not an API key. Use a dedicated account, not a person's
-   and not the organization's owner, on a real mailbox you control. Invite it
-   to the organization with the **People admin** role, accept the invitation,
-   and verify its email. Leave two-factor off on this account: nobody is
-   there to type the code.
+   to send invitations and to set each member's free allowance, because
+   Caimex's organization endpoints accept a sign-in session and not an API
+   key. Use a dedicated account, not a person's and not the organization's
+   owner, on a real mailbox you control. Invite it to the organization with
+   the **Admin** role, accept the invitation, and verify its email. Admin is
+   needed because setting a spending cap needs billing rights, which People
+   admin does not have. Leave two-factor off on this account: nobody is there
+   to type the code.
 2. **Fill in `.env` on the server** (see `.env.example`):
 
    | Setting | Value |
@@ -50,6 +52,32 @@ blocks a sign-in here.
 
 At start the hub logs a line beginning `caimex accounts are OFF` if a setting
 is missing or an address is not `https`.
+
+## The free allowance
+
+ZAI's wallet pays for each member's first `CAIMEX_FREE_ALLOWANCE_USD` dollars
+of Caimex use ($5 as shipped, set in `charts/jupyterhub-values.yaml`), once.
+
+| Who | What happens |
+|---|---|
+| Anyone who joins the organization, however they join (through ZAI Compute, a Caimex invitation, or an email domain rule) | Within about a minute, a lifetime cap of the allowance, with their spend so far reset to zero. A new ZAI Compute account is capped at once |
+| Members who were already there when this was switched on | The same fresh allowance, at the first check |
+| Owners and admins | Never capped |
+| Someone with a cap already, whoever set it | Left alone. To leave someone effectively uncapped, give them a large cap such as $1,000. Do not clear a cap: an empty one is filled in again at the next check, with $0 for anyone who has already had the allowance |
+| Someone who has had the allowance, left, and rejoined | A cap of $0: no second allowance |
+
+The hub checks the member list every minute. If a check fails (Caimex down,
+the service account refused), nobody is capped that time and the next check
+tries again.
+
+**When the allowance runs out.** Caimex refuses the person's requests in ZAI's
+workspaces; it does not move them onto their own money there. To carry on,
+they switch to their personal workspace in Caimex, which every account has,
+and add their own credit. The sign-in and signup pages tell users this.
+
+**The wallet must have money.** The allowance is a ceiling, not a payment:
+ZAI's organization wallet has to be topped up in Caimex to cover what members
+use, up to the allowance each.
 
 ## What admins see
 
@@ -81,6 +109,7 @@ Caimex account does: they sign in to Caimex themselves from then on.
 | Where | What |
 |---|---|
 | Hub database, table `zai_caimex_accounts` | Username, email, status, failure reason, and whether to keep trying the hub password |
+| Hub database, table `zai_caimex_allowances` | Who has received the free allowance (by Caimex account), how much and when. Never deleted, so the allowance is given once |
 | Hub memory | The service account's session and one Caimex session per signed-in user. Lost on restart |
 | `caimex-provision` secret | The five settings, including the service account's password |
 | Nowhere | Users' passwords and Caimex sessions are never written to the database or the log |
@@ -88,8 +117,10 @@ Caimex account does: they sign in to Caimex themselves from then on.
 ## Risks to know about
 
 - **The service account's password is in the hub's secret.** Whoever can read
-  it can do whatever that account can do in Caimex. This is why it should be a
-  People admin and not the owner.
+  it can do whatever that account can do in Caimex. As an Admin it can manage
+  members, invitations, billing settings and spending caps, and revoke keys.
+  It cannot withdraw money, transfer ownership or delete the organization,
+  which is why it should be an Admin and not the owner.
 - **The hub holds a live Caimex session for each signed-in user.** Someone who
   took over the hub process could act as those users in Caimex until the
   sessions expire.
@@ -119,6 +150,8 @@ Caimex account does: they sign in to Caimex themselves from then on.
 | `failed`: "invitation: HTTP 403" | The service account cannot manage invitations in that organization |
 | `failed`: "invitation: HTTP 404" | Wrong `CAIMEX_ORG_ID`, or the service account is not a member |
 | `failed`: "HTTP 429" | Caimex's rate limit. It clears by itself |
+| A member has no cap after a minute or two | Look for `caimex allowance` in the hub log. "could not cap ... HTTP 403" means the service account is not an Admin |
+| No `caimex allowance` lines in the hub log at all | `CAIMEX_FREE_ALLOWANCE_USD` is empty or not a valid amount |
 | Caimex shows the wrong person's name after **Open Caimex** | The browser was already signed in to Caimex as someone else. Reload the Caimex page |
 
 ## Tests

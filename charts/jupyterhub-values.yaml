@@ -122,6 +122,10 @@ hub:
     CAIMEX_SERVICE_PASSWORD:
       valueFrom:
         secretKeyRef: {name: caimex-provision, key: password, optional: true}
+    # ZAI's wallet pays for each member's first this-many dollars of Caimex,
+    # once. Empty turns the allowance off. Only matters when the five
+    # settings above are present.
+    CAIMEX_FREE_ALLOWANCE_USD: "5"
   config:
     JupyterHub:
       authenticator_class: nativeauthenticator.NativeAuthenticator
