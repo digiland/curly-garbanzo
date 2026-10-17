@@ -52,6 +52,7 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `docs/CLUSTER.md` | Running this on more than one node: what breaks, distributed training, notes on serving inference |
 | `docs/PLATFORM.md` | Selling GPU time: credit and billing, GPU sizes, templates, SSH/ports/API |
 | `docs/SERVERLESS.md` | Serverless endpoints: how they work, using them, data handling; the research behind them |
+| `docs/CAIMEX.md` | Optional: a Caimex account for each user at first sign-in, and one-click Open Caimex |
 
 ## Deploy
 
