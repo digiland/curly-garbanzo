@@ -83,6 +83,8 @@ class Catalog:
         self.low_balance = to_micros(b.get("low_balance", 0))
 
         self.pools = {str(k): int(v) for k, v in (data.get("gpu_pools") or {}).items()}
+        # What the start page calls each pool ("H200 slices"); optional.
+        self.pool_labels = {str(k): str(v) for k, v in (data.get("gpu_pool_labels") or {}).items()}
 
         sv = data.get("serverless") or {}
         self.sv_enabled = bool(sv.get("enabled", False))
@@ -510,40 +512,63 @@ class ZaiSpawner(KubeSpawner):
 
 
 def options_form(spawner):
-    """The size + template picker on /hub/spawn, with prices and free slices."""
+    """The size + template picker on /hub/spawn, with prices and free slices.
+
+    Only markup: the form still sends `profile` (a size slug) and `template`,
+    which options_from_form() and ZaiSpawner check. templates/spawn.html holds
+    the summary bar that the script below fills in."""
     from html import escape as e
     user = spawner.user
     with _db() as con:
         acct = account(con, user.name)
         free = availability(con)
     admin_free = user.admin and CATALOG.admins_free
+    note = f" {e(CATALOG.price_note)}" if CATALOG.price_note else ""
     rows = []
     for z in CATALOG.sizes:
         if z["gpu"]:
             n = free.get(z["gpu"]["pool"], 0) // max(1, z["gpu"]["count"])
             avail = f"{n} free" if n else "Full"
             full = n == 0
-            spec = f"{z['gpu'].get('vram_gb') or '?'} GB VRAM · {e(z['memory'])} RAM · {z['cpu']} CPU"
+            vram = f"{z['gpu'].get('vram_gb') or '?'} GB"
         else:
-            avail, full = "Available", False
-            spec = f"No GPU · {e(z['memory'])} RAM · {z['cpu']} CPU"
-        price = "Free for admins" if admin_free else CATALOG.rate_str(z["rate"])
+            avail, full, vram = "Available", False, "None"
+        v = z["rate"] / MICROS
+        if admin_free:
+            big, small = "Free", "for administrators"
+        else:
+            big = f"{CATALOG.symbol}{v:,.2f}" if v >= 0.01 else f"{CATALOG.symbol}{v:,.3f}"
+            small = f"/ hour{note}"
+        ram = re.sub(r"^([0-9.]+)([KMGT])i?$", r"\1 \2B", str(z["memory"]))     # "12G" -> "12 GB"
         tpls = " ".join(t["slug"] for t in CATALOG.templates_for(z))
+        tag = '<span class="z-pill is-gold">Recommended</span>' if z["default"] else ""
         rows.append(f"""
       <label class="z-size{' is-full' if full else ''}">
-        <input type="radio" name="profile" value="{e(z['slug'])}" data-templates="{e(tpls)}"
-               {'checked' if z['default'] and not full else ''} {'disabled' if full else ''}>
-        <span class="z-size-body">
-          <span class="z-size-top"><strong>{e(z['name'])}</strong><span class="z-size-price">{e(price)}</span></span>
-          <span class="z-size-spec">{spec}</span>
-          <span class="z-size-desc">{e(z['description'])}</span>
-          <span class="z-pill{' is-bad' if full else ' is-ok'}">{avail}</span>
+        <span class="z-size-top">
+          <span class="z-size-name"><input type="radio" name="profile" value="{e(z['slug'])}" data-templates="{e(tpls)}"
+                 data-name="{e(z['name'])}" data-rate="{0 if admin_free else z['rate']}" data-price="{e(CATALOG.rate_str(z['rate']))}"
+                 {'checked' if z['default'] and not full else ''} {'disabled' if full else ''}>{e(z['name'])}</span>
+          {tag}
         </span>
+        <span class="z-size-price"><b>{e(big)}</b><span>{small}</span></span>
+        <span class="z-size-spec">
+          <span>VRAM<b>{vram}</b></span><span>RAM<b>{e(ram)}</b></span><span>CPU<b>{z['cpu']} cores</b></span>
+        </span>
+        <span class="z-size-desc">{e(z['description'])}</span>
+        <span class="z-pill{' is-bad' if full else ' is-ok'}">{avail}</span>
       </label>""")
-    opts = "".join(
-        f'<option value="{e(t["slug"])}" {"selected" if t["default"] else ""} '
-        f'data-desc="{e(t["description"])}">{e(t["name"])}</option>'
+    tiles = "".join(
+        f"""
+      <label class="z-tpl"><input type="radio" name="template" value="{e(t['slug'])}" data-name="{e(t['name'])}"
+             {'checked' if t['default'] else ''}><span><b>{e(t['name'])}</b><small>{e(t['description'])}</small></span></label>"""
         for t in CATALOG.templates)
+    slots = ""
+    for res, cap in CATALOG.pools.items():
+        left = free.get(res, 0)
+        bar = "".join('<i class="on"></i>' if i < cap - left else "<i></i>" for i in range(cap))
+        label = e(CATALOG.pool_labels.get(res, "GPU slices"))
+        slots += (f'<div class="z-slots"><div class="z-slots-head"><span class="z-label">{label} free</span>'
+                  f'<b>{left} of {cap}</b></div><div class="z-slots-bar" aria-hidden="true">{bar}</div></div>')
     bal = acct["balance"]
     if admin_free:
         head = '<p class="z-balance">Administrator: your servers are not charged.</p>'
@@ -553,29 +578,42 @@ def options_form(spawner):
                 f' · charged by the second while your server runs'
                 f'{" · <a href=account#credit>request credit</a>" if low else ""}</p>')
     return f"""
-<div class="z-spawn">
-  {head}
+<div class="z-spawn" data-balance="{bal}" data-money="{e(CATALOG.money(bal))}" data-free="{1 if admin_free else 0}">
+  <div class="z-spawn-top">{head}{slots}</div>
   <fieldset class="z-sizes"><legend>Size</legend>{''.join(rows)}</fieldset>
-  <label class="z-template">Template
-    <select name="template" id="z-template">{opts}</select>
-    <span class="z-template-desc" id="z-template-desc"></span>
-  </label>
+  <fieldset class="z-tpls"><legend>Template</legend>{tiles}</fieldset>
 </div>
 <script>
 (function () {{
-  var sel = document.getElementById('z-template'), desc = document.getElementById('z-template-desc');
+  var box = document.querySelector('.z-spawn'), out = document.getElementById('z-summary');
+  var tpls = document.querySelectorAll('input[name=template]');
   function sync() {{
     var r = document.querySelector('input[name=profile]:checked');
     var ok = r ? r.dataset.templates.split(' ') : [];
-    Array.prototype.forEach.call(sel.options, function (o) {{ o.disabled = ok.indexOf(o.value) < 0; }});
-    if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) {{
-      var first = Array.prototype.find.call(sel.options, function (o) {{ return !o.disabled; }});
-      if (first) sel.value = first.value;
+    tpls.forEach(function (t) {{ t.disabled = ok.indexOf(t.value) < 0; }});
+    var t = document.querySelector('input[name=template]:checked');
+    if (!t || t.disabled) {{
+      t = Array.prototype.find.call(tpls, function (x) {{ return !x.disabled; }});
+      if (t) t.checked = true;
     }}
-    desc.textContent = sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.desc : '';
+    if (!out) return;
+    if (!r) {{ out.textContent = 'Choose a size.'; return; }}
+    var text = r.dataset.name + (t ? ' with ' + t.dataset.name : '');
+    var rate = Number(r.dataset.rate), bal = Number(box.dataset.balance);
+    if (box.dataset.free === '1') text += ' · not charged';
+    else {{
+      text += ' · ' + r.dataset.price;
+      if (rate > 0 && bal > 0) {{
+        var h = bal / rate;
+        text += ' · your ' + box.dataset.money + ' covers about ' + (h < 10 ? h.toFixed(1) : Math.round(h)) + ' hours';
+      }}
+    }}
+    out.textContent = text;
   }}
-  document.querySelectorAll('input[name=profile]').forEach(function (r) {{ r.addEventListener('change', sync); }});
-  sel.addEventListener('change', sync);
+  document.querySelectorAll('input[name=profile], input[name=template]').forEach(function (x) {{ x.addEventListener('change', sync); }});
+  // /hub/spawn#<size> (the size cards on Home) picks that size, if it is free.
+  var want = document.querySelector('input[name=profile][value="' + location.hash.slice(1).replace(/[^a-z0-9-]/gi, '') + '"]');
+  if (location.hash && want && !want.disabled) want.checked = true;
   sync();
 }})();
 </script>"""

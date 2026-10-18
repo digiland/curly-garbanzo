@@ -1,0 +1,216 @@
+{% extends "page.html" %}
+{# Overrides jupyterhub/templates/token.html. JupyterHub's own token.js still
+   does the work (creating, revoking, turning times into "3 days ago"), so
+   every id and class it looks for is kept: #request-token-form, #token-note,
+   #token-expiration-seconds, #token-scopes, #token-area, #token-result,
+   .token-row[data-token-id], .revoke-token-btn, .time-col. The script at the
+   end only adds the expiry buttons, the access choice, Show / Copy and this
+   site's address in the examples; without it the page is a plain form. #}
+
+{% block title %}API tokens · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">Access</div>
+      <h1>API tokens</h1>
+      <p>A token lets the <code>zai</code> command-line tool, your scripts and apps act as you: start servers, reach ports on your server and call endpoints. Treat it like a password. It can spend your credit.</p>
+    </div>
+  </div>
+
+  <section id="token-area" class="z-card z-newtoken" role="status" style="display: none;">
+    <div class="z-card-head" style="flex-wrap:wrap">
+      <h2>Your new token</h2>
+      <span class="z-pill is-warn">Shown only once</span>
+    </div>
+    <div class="z-newtoken-row">
+      <span id="token-result" class="z-newtoken-value is-hidden"></span>
+      <button type="button" class="z-btn is-quiet" id="token-show" hidden>Show</button>
+      <button type="button" class="z-btn" id="token-copy" hidden>Copy</button>
+    </div>
+    <p class="z-empty">Copy it now and keep it somewhere safe. Once you leave this page it can't be shown again; you'd create a new one. It joins <a href="#api-tokens-section">Your tokens</a> when you reload the page.</p>
+  </section>
+
+  <div class="z-two">
+    <section class="z-card">
+      <h2>Create a token</h2>
+      <form id="request-token-form" class="z-token-form">
+        <div class="z-field">
+          <label for="token-note">What it's for</label>
+          <input id="token-note" class="z-input" maxlength="1000" placeholder="e.g. laptop, training script">
+          <span class="hint">So you can tell your tokens apart later.</span>
+        </div>
+        <div class="z-field">
+          <label for="token-expiration-seconds">Expires</label>
+          {% block expiration_options %}
+            <select id="token-expiration-seconds" class="z-input">{{ token_expires_in_options_html | safe }}</select>
+          {% endblock expiration_options %}
+          <div class="z-choice" id="token-expiry-choice" role="group" aria-label="Expires" hidden></div>
+          <span class="hint">A token that expires can't be misused for long if it leaks.</span>
+        </div>
+        <fieldset class="z-field z-token-access">
+          <legend>Access</legend>
+          <label class="z-tpl"><input type="radio" name="token-access" value="all" checked>
+            <span><b>Everything you can do <span class="z-pill is-gold">Recommended</span></b><small>Servers, ports and endpoints. Right for the <code>zai</code> tool.</small></span></label>
+          <label class="z-tpl"><input type="radio" name="token-access" value="custom">
+            <span><b>Custom</b><small>Limit it to the permissions you list, for a token that does one job.</small></span></label>
+          <div class="z-field" id="token-scopes-field">
+            <label for="token-scopes">Permissions, separated by spaces</label>
+            <input id="token-scopes" class="z-input" placeholder="e.g. servers access:servers">
+            <span class="hint">Empty means everything you can do. <a href="https://jupyterhub.readthedocs.io/en/stable/rbac/scopes.html#available-scopes" target="_blank" rel="noopener">Which permissions exist</a></span>
+          </div>
+        </fieldset>
+        <button type="submit" class="z-btn is-block">Create token</button>
+      </form>
+    </section>
+
+    <section class="z-card" style="display:grid;gap:1rem">
+      <div>
+        <h2 style="margin-bottom:.25rem">Use it</h2>
+        <p class="z-empty">Paste your token where these say <code>$TOKEN</code>.</p>
+      </div>
+      <div class="z-field">
+        <span class="z-label">The zai command-line tool</span>
+        <div class="z-pre" style="margin:0">./zai login <span class="z-origin">https://this-site</span></div>
+      </div>
+      <div class="z-field">
+        <span class="z-label">A port on your server</span>
+        <div class="z-pre" style="margin:0">curl -H "Authorization: Bearer $TOKEN" \
+  <span class="z-origin">https://this-site</span>{{ base_url | replace("/hub/", "/") }}user/{{ user.name }}/proxy/8000/</div>
+      </div>
+      <div class="z-field">
+        <span class="z-label">OpenAI-compatible clients</span>
+        <div class="z-pre" style="margin:0">OpenAI(api_key=TOKEN, base_url=
+  "<span class="z-origin">https://this-site</span>{{ base_url | replace("/hub/", "/") }}user/{{ user.name }}/proxy/8000/v1")</div>
+      </div>
+      <p class="z-empty">More, including SSH: <a href="{{ base_url }}account#connect">Account</a>.</p>
+    </section>
+  </div>
+
+  <section class="z-card" id="api-tokens-section">
+    <h2>Your tokens</h2>
+    {% if api_tokens %}
+    <p class="z-empty" style="margin-bottom:.75rem">Revoke a token to stop it working at once. Revoking the token of a running server means restarting that server.</p>
+    <div class="z-table-wrap">
+      <table class="z-table" id="api-tokens-table">
+        <thead><tr><th>What it's for</th><th>Access</th><th>Last used</th><th>Created</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          {% for token in api_tokens %}
+          <tr class="token-row" data-token-id="{{ token.api_id }}">
+            <td><strong>{{ token.note or "No note" }}</strong></td>
+            <td>
+              {% if token.scopes | list == ["inherit"] %}<span class="z-pill">Everything</span>
+              {% else %}<details class="z-scopes"><summary>{{ token.scopes | length }} permission{{ "" if token.scopes | length == 1 else "s" }}</summary>
+                {% for scope in token.scopes %}<code>{{ scope }}</code>{% endfor %}</details>{% endif %}
+            </td>
+            <td class="time-col">{% if token.last_activity %}{{ token.last_activity.isoformat() + 'Z' }}{% else %}Never{% endif %}</td>
+            <td class="time-col">{% if token.created %}{{ token.created.isoformat() + 'Z' }}{% else %}N/A{% endif %}</td>
+            <td>{% if token.expires_at %}<span class="z-pill is-gold time-col">{{ token.expires_at.isoformat() + 'Z' }}</span>{% else %}<span class="z-pill">Never</span>{% endif %}</td>
+            <td class="num"><button type="button" class="revoke-token-btn z-btn is-sm is-danger">Revoke</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="z-empty-box">
+      <strong>No tokens yet</strong>
+      <span>Tokens you create appear here, with when they were last used and when they expire.</span>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="z-card" id="oauth-clients-section">
+    <h2 style="margin-bottom:.25rem">Signed-in apps</h2>
+    <p class="z-empty" style="margin-bottom:.75rem">Apps you've let use your account to know who you are, such as your own server once you open it. Revoking signs them out.</p>
+    {% if oauth_clients %}
+    <div class="z-table-wrap">
+      <table class="z-table" id="oauth-tokens-table">
+        <thead><tr><th>App</th><th>Last used</th><th>First signed in</th><th></th></tr></thead>
+        <tbody>
+          {% for client in oauth_clients %}
+          <tr class="token-row" data-token-id="{{ client['token_id'] }}">
+            <td><strong>{{ client['description'] }}</strong></td>
+            <td class="time-col">{% if client['last_activity'] %}{{ client['last_activity'].isoformat() + 'Z' }}{% else %}Never{% endif %}</td>
+            <td class="time-col">{% if client['created'] %}{{ client['created'].isoformat() + 'Z' }}{% else %}N/A{% endif %}</td>
+            <td class="num"><button type="button" class="revoke-token-btn z-btn is-sm is-danger">Revoke</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="z-empty-box"><strong>No apps signed in</strong></div>
+    {% endif %}
+  </section>
+</div>
+{% endblock main %}
+
+{% block script %}
+{{ super() }}
+<script type="text/javascript">require(["token"]);</script>
+<script>
+  (function () {
+    // This site's address in the examples.
+    document.querySelectorAll(".z-origin").forEach(function (el) { el.textContent = location.origin; });
+
+    // Expiry: buttons in place of the dropdown, one week chosen to start with
+    // when that option exists. The dropdown stays as the value token.js reads.
+    var sel = document.getElementById("token-expiration-seconds");
+    var box = document.getElementById("token-expiry-choice");
+    if (sel && box) {
+      var week = Array.prototype.find.call(sel.options, function (o) { return o.value === "604800"; });
+      if (week) sel.value = week.value;
+      Array.prototype.forEach.call(sel.options, function (o) {
+        var b = document.createElement("button");
+        b.type = "button"; b.textContent = o.textContent; b.dataset.value = o.value;
+        b.addEventListener("click", function () { sel.value = o.value; mark(); });
+        box.appendChild(b);
+      });
+      function mark() {
+        box.querySelectorAll("button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.value === sel.value)); });
+      }
+      mark();
+      sel.hidden = true;
+      box.hidden = false;
+    }
+
+    // Access: the permissions box only for Custom; Everything sends none.
+    var scopes = document.getElementById("token-scopes");
+    var field = document.getElementById("token-scopes-field");
+    var radios = document.querySelectorAll("input[name=token-access]");
+    function access() {
+      var custom = document.querySelector("input[name=token-access]:checked").value === "custom";
+      field.hidden = !custom;
+      if (!custom) scopes.value = "";
+    }
+    radios.forEach(function (r) { r.addEventListener("change", access); });
+    access();
+
+    // The new token: hidden as dots until Show; Copy puts it on the clipboard.
+    var value = document.getElementById("token-result");
+    var show = document.getElementById("token-show"), copy = document.getElementById("token-copy");
+    show.hidden = copy.hidden = false;
+    show.addEventListener("click", function () {
+      var hidden = value.classList.toggle("is-hidden");
+      show.textContent = hidden ? "Show" : "Hide";
+    });
+    copy.addEventListener("click", function () {
+      var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1500); };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(value.textContent).then(done);
+      } else {
+        var r = document.createRange(); r.selectNodeContents(value);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        document.execCommand("copy"); done();
+      }
+    });
+    // token.js shows #token-area when a token arrives; bring it into view.
+    var area = document.getElementById("token-area");
+    if (window.MutationObserver) new MutationObserver(function () {
+      if (area.style.display !== "none") area.scrollIntoView({ behavior: "smooth", block: "start" });
+    }).observe(area, { attributes: true, attributeFilter: ["style"] });
+  })();
+</script>
+{% endblock script %}

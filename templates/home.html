@@ -1,36 +1,81 @@
 {% extends "page.html" %}
 {# Overrides jupyterhub/templates/home.html. The stock home.js binds #stop and
-   #start, so both ids are kept. Named servers are off on this deploy. #}
+   #start, so both ids are kept. Named servers are off on this deploy.
+   `zai_home` (hub-ext/zai_myusage.py) adds the balance, the running
+   session's figures and the sizes, already formatted; without it the page is
+   the plain start / stop card. #}
 {% if announcement_home is string %}{% set announcement = announcement_home %}{% endif %}
 
 {% block title %}Home · ZAI Notebooks{% endblock %}
 
 {% block main %}
-<div class="z-page" style="max-width:40rem">
+{% set zh = zai_home if zai_home is defined else None %}
+<div class="z-page">
   <div class="z-page-head">
     <div>
       <div class="z-eyebrow">{{ user.name }}</div>
       <h1>Your server</h1>
+      <p>{% if default_server.active %}Your server is running{% if default_server.ready and not (zh and zh.free) %} and being charged{% endif %}. Stopping it ends the charge and frees its GPU; your files stay.
+        {% else %}Nothing running, so nothing is being charged. Starting takes about fifteen seconds.{% endif %}</p>
     </div>
     {% if default_server.active %}<span class="z-pill is-ok">running</span>{% else %}<span class="z-pill">stopped</span>{% endif %}
   </div>
-  <div class="z-card">
-    {% if default_server.active %}
-      <p>Your server is running{% if default_server.ready %} and being charged{% endif %}. Stopping it ends the charge and frees its GPU; your files stay.</p>
-      <div style="display:flex;gap:.75rem;flex-wrap:wrap">
-        <a id="start" role="button" class="z-btn" href="{{ url }}">Open JupyterLab</a>
-        <a id="stop" role="button" class="z-btn is-danger">Stop server</a>
-      </div>
-    {% else %}
-      <p>Nothing running, so nothing is being charged. Starting takes about fifteen seconds; you'll choose a size and template first.</p>
-      <a id="start" role="button" class="z-btn" href="{{ url }}">Start server</a>
+
+  {% if default_server.active %}
+  <section class="z-card" style="display:grid;gap:1.1rem">
+    {% set r = zh.running[0] if zh and zh.running else None %}
+    <div class="z-mid" style="font-size:1.5rem">{{ r.size if r else "Your server" }}</div>
+    {% if r %}
+    <div class="z-figs">
+      <div><span class="z-label">For</span><b>{{ r.for }}</b></div>
+      <div><span class="z-label">So far</span><b>{{ r.cost }}</b></div>
+      <div><span class="z-label">Rate</span><b>{{ r.rate }}</b></div>
+      {% if zh and not zh.free %}<div><span class="z-label">Balance</span><b>{{ zh.balance }}</b></div>{% endif %}
+    </div>
     {% endif %}
+    <div class="z-actions">
+      <a id="start" role="button" class="z-btn" href="{{ url }}">Open JupyterLab</a>
+      <a id="stop" role="button" class="z-btn is-danger">Stop server</a>
+    </div>
+  </section>
+  {% else %}
+  {% if zh %}
+  <div class="z-sizes" role="list" aria-label="Sizes you can start">
+    {% for z in zh.sizes %}
+    <a class="z-size" role="listitem" href="{{ base_url }}spawn#{{ z.slug }}" style="text-decoration:none;color:inherit">
+      <span class="z-size-top">
+        <span class="z-size-name">{{ z.name }}</span>
+        {% if z.default %}<span class="z-pill is-gold">Recommended</span>{% endif %}
+      </span>
+      <span class="z-size-price"><b>{{ z.price }}</b><span>{% if zh.free %}for administrators{% else %}/ hour{% if zh.note %} {{ zh.note }}{% endif %}{% endif %}</span></span>
+      <span class="z-size-desc">{{ z.vram }}{% if z.hours %} · your {{ zh.balance }} covers about <strong>{{ z.hours }} hours</strong>{% endif %}</span>
+    </a>
+    {% endfor %}
   </div>
-  <p class="z-empty">Servers stop on their own after 60 minutes idle. Your home directory (10 GB) is kept between sessions. Balance, prices, SSH and API access: <a href="{{ base_url }}account">Account</a>.</p>
+  {% endif %}
+  <div class="z-card" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between">
+    <p style="margin:0;color:var(--z-ink-2)">{% if zh and not zh.free %}Balance <strong style="color:var(--z-ink)">{{ zh.balance }}</strong>{% if zh.low %} · <a href="{{ base_url }}account#credit">request credit</a>{% endif %}. {% endif %}You'll choose a size and a template next.</p>
+    <a id="start" role="button" class="z-btn" href="{{ url }}">Start server</a>
+  </div>
+  {% endif %}
+
+  <p class="z-empty">Servers stop on their own after 60 minutes idle. Your home directory (10 GB) is kept between sessions.
+    Balance, prices, SSH and API access: <a href="{{ base_url }}account">Account</a>. Every session: <a href="{{ base_url }}my-usage">My usage</a>.</p>
 </div>
 {% endblock main %}
 
 {% block script %}
 {{ super() }}
 <script type="text/javascript">require(["home"]);</script>
+<script>
+  // home.js only hides the Stop button once the server has stopped; reload so
+  // the page shows the stopped view with its sizes.
+  (function () {
+    var stop = document.getElementById("stop");
+    if (!stop || !window.MutationObserver) return;
+    new MutationObserver(function () {
+      if (stop.style.display === "none") location.reload();
+    }).observe(stop, { attributes: true, attributeFilter: ["style"] });
+  })();
+</script>
 {% endblock %}

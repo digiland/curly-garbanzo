@@ -11,7 +11,7 @@
   <div class="z-page-head">
     <div>
       <div class="z-eyebrow">{% if for_user and user.name != for_user.name %}Starting a server for {{ for_user.name }}{% else %}Start your server{% endif %}</div>
-      <h1>Choose a size</h1>
+      <h1>Choose your GPU</h1>
       <p>Pick the hardware and what should be installed on it. You're charged by the second while the server runs, and nothing once it stops. If today's work never touches CUDA, CPU only is cheaper and leaves a GPU free.</p>
     </div>
   </div>
@@ -24,9 +24,13 @@
 
   <form enctype="multipart/form-data" id="spawn_form" action="{{ url }}" method="post" role="form">
     {{ spawner_options_form | safe }}
-    <div class="z-spawn-actions feedback-container">
-      <button type="submit" class="z-btn">Start server</button>
-      <div class="feedback-widget hidden"><i class="fa fa-spinner"></i> Starting…</div>
+    {# Filled in by the script in the options form (hub-ext/zai_platform.py). #}
+    <div class="z-spawn-bar">
+      <span id="z-summary" aria-live="polite"></span>
+      <div class="z-spawn-actions feedback-container" style="margin:0">
+        <button type="submit" class="z-btn">Start server</button>
+        <div class="feedback-widget hidden"><i class="fa fa-spinner"></i> Starting…</div>
+      </div>
     </div>
   </form>
 

@@ -25,12 +25,42 @@
       <p>Your code, run on demand: send a job, a worker starts with your handler, and it stops when the queue is empty.
         You pay per second while a worker runs, cold start and idle time included. The API is RunPod's.</p>
     </div>
-    <a class="z-btn is-quiet is-sm" href="{{ base_url }}endpoints">Refresh</a>
+    {% if not (unavailable and 'not set up' in unavailable) %}<a class="z-btn is-quiet is-sm" href="{{ base_url }}endpoints">Refresh</a>{% endif %}
   </div>
 
   {% if message %}<p class="z-alert is-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
-  {% if unavailable %}<p class="z-alert is-warn" role="alert">{{ unavailable }}</p>{% endif %}
+  {# "not set up": this hub has no gateway yet, so endpoints are presented as
+     coming; anything else from the gateway is a passing fault. #}
+  {% set not_setup = unavailable and 'not set up' in unavailable %}
+  {% if not_setup %}
+  <section class="z-card z-soon">
+    <div>
+      <span class="z-pill is-gold">Coming soon</span>
+      <h2>Serverless endpoints are on their way</h2>
+      <p>Endpoints are built and switch on with a coming update. In the meantime, write and test your handler in a notebook server: it runs unchanged once endpoints are live.</p>
+      <div class="z-actions"><a class="z-btn" href="{{ base_url }}spawn">Start a notebook</a></div>
+    </div>
+    <div class="z-pre" aria-label="Example handler" style="margin:0"># ~/endpoints/echo/handler.py
+import zai_serverless as runpod     # or: import runpod
+
+def handler(job):
+    return {"echo": job["input"]}
+
+runpod.serverless.start({"handler": handler})</div>
+  </section>
+  <section class="z-card">
+    <h2 style="margin-bottom:1.25rem">How it will work</h2>
+    <div class="z-how-grid">
+      <div><div><b>Write a handler</b><span>A folder in your home with a <code>handler.py</code>. RunPod handlers work as they are.</span></div></div>
+      <div><div><b>Pick a GPU size</b><span>An administrator creates the endpoint on the size you choose.</span></div></div>
+      <div><div><b>Send jobs</b><span>POST to <code>/v2/&lt;endpoint&gt;/run</code> with your token. Workers start on demand.</span></div></div>
+      <div><div><b>Pay per second</b><span>At the size's hourly price while a worker runs, cold start included.</span></div></div>
+    </div>
+  </section>
+  {% elif unavailable %}
+  <p class="z-alert is-warn" role="alert">{{ unavailable }} Your endpoints and their jobs are safe; this page just can't show them right now.</p>
+  {% endif %}
 
   {% if not endpoints and not unavailable %}
   <section class="z-card">
