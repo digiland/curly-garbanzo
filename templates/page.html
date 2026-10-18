@@ -6,7 +6,8 @@
   `{% extends "page.html" %}` -- login, signup, authorize, change-password,
   spawn, spawn_pending, home -- inherits this, so the whole surface is themed
   from one file. The nav links are reproduced below; dropping them would
-  silently remove admins' route to /hub/authorize.
+  silently remove admins' route to /hub/authorize. Change Password is on the
+  Account page (Sign-in security) rather than in the nav.
 
   Palette is taken from the ZAI logo (templates/logo.png): gold accent, silver
   neutrals, graphite ink. The navbar stays graphite in both themes because the
@@ -48,7 +49,7 @@
     --z-display:     'Outfit', 'Segoe UI', system-ui, sans-serif;
     --z-body:        'Manrope', 'Segoe UI', system-ui, sans-serif;
     --z-mono:        'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-    --z-radius:      10px;
+    --z-radius:      14px;
     --z-shadow:      0 1px 2px rgba(21,23,27,.06), 0 12px 32px -12px rgba(21,23,27,.18);
   }
   /* JupyterHub's darkmode.js always stamps data-bs-theme (stored choice, else
@@ -99,6 +100,25 @@
   .navbar .btn-outline-contrast { color: #e6e8eb; border-color: #3a4049; border-radius: 8px; font-weight: 600; }
   .navbar .btn-outline-contrast:hover { background: #e0b942; border-color: #e0b942; color: #15171b; }
   .navbar #dark-theme-toggle { color: #c7cbd1; }
+  /* The page being shown: marked by the script at the end of this file. */
+  .navbar .nav-link[aria-current="page"] { color: #fff !important; font-weight: 700; box-shadow: inset 0 -2px 0 #e0b942; }
+  #login_widget { display: inline-flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .z-nav-chip {
+    display: inline-flex; align-items: center; padding: .25rem .7rem; border-radius: 999px;
+    background: rgba(224,185,66,.14); color: #e0b942 !important; font-weight: 700; font-size: .85rem;
+    font-variant-numeric: tabular-nums; text-decoration: none;
+  }
+  .z-nav-chip:hover { background: rgba(224,185,66,.24); }
+  .z-nav-chip.is-low { background: rgba(232,162,74,.16); color: #e8a24a !important; }
+  .z-nav-cta {
+    display: inline-flex; align-items: center; gap: .35rem; padding: .35rem .8rem; border-radius: 8px;
+    border: 1px solid #3a4049; color: #e6e8eb !important; font-weight: 600; font-size: .85rem; text-decoration: none;
+  }
+  .z-nav-cta:hover { border-color: #e0b942; color: #e0b942 !important; }
+  .z-avatar {
+    width: 2rem; height: 2rem; border-radius: 50%; background: #2a2f37; color: #e0b942;
+    display: inline-grid; place-items: center; font: 700 .85rem var(--z-display); flex: none;
+  }
   .navbar .navbar-toggler { border-color: #3a4049; }
   .navbar .navbar-toggler-icon { filter: invert(1) grayscale(1); }
 
@@ -113,7 +133,7 @@
   .z-btn, .btn-jupyter {
     display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
     font-family: var(--z-body); font-weight: 700; font-size: .95rem; line-height: 1;
-    padding: .8rem 1.25rem; border-radius: 8px; border: 1px solid transparent;
+    min-height: 44px; padding: .8rem 1.25rem; border-radius: 10px; border: 1px solid transparent;
     background: var(--z-gold); color: #15171b !important; text-decoration: none; cursor: pointer;
     transition: background .15s, transform .05s;
   }
@@ -125,7 +145,7 @@
   .z-btn.is-quiet:hover { background: var(--z-inset); border-color: var(--z-line-strong); }
   .z-btn.is-danger { background: transparent; border-color: var(--z-bad); color: var(--z-bad) !important; }
   .z-btn.is-danger:hover { background: var(--z-bad); color: #fff !important; }
-  .z-btn.is-sm { padding: .5rem .85rem; font-size: .85rem; }
+  .z-btn.is-sm { min-height: 36px; padding: .5rem .85rem; font-size: .85rem; }
   .z-btn[disabled] { opacity: .55; cursor: default; }
 
   .z-field { display: flex; flex-direction: column; gap: .35rem; }
@@ -266,12 +286,12 @@
   }
 
   /* ---- page shell for signed-in pages (spawn / home / authorize) ---- */
-  .z-page { max-width: 60rem; margin: clamp(1.5rem, 4vh, 3rem) auto; padding-inline: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }   /* minmax: a wide table scrolls in its .z-table-wrap instead of widening the page */
+  .z-page { max-width: 75rem; margin: clamp(1.5rem, 4vh, 3rem) auto; padding-inline: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }   /* minmax: a wide table scrolls in its .z-table-wrap instead of widening the page */
   .z-page-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 1rem; }
-  .z-page-head h1 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 600; margin: .25rem 0 0; }
-  .z-page-head p { margin: .35rem 0 0; color: var(--z-muted); max-width: 60ch; }
-  .z-card { background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); padding: 1.25rem; }
-  .z-card h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 .75rem; }
+  .z-page-head h1 { font-size: clamp(1.75rem, 3.5vw, 2.5rem); font-weight: 600; margin: .3rem 0 0; letter-spacing: -.02em; line-height: 1.1; }
+  .z-page-head p { margin: .5rem 0 0; color: var(--z-ink-2); max-width: 64ch; }
+  .z-card { background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); padding: 1.5rem; box-shadow: var(--z-shadow); }
+  .z-card h2 { font-size: 1.2rem; font-weight: 600; margin: 0 0 .75rem; }
   .z-card p:last-child { margin-bottom: 0; }
 
   /* ---- spawn profiles (markup emitted by KubeSpawner) ---- */
@@ -315,7 +335,7 @@
 
   /* ---- usage (admin) ---- */
   .z-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .75rem; }
-  .z-stat { background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); padding: 1rem 1.1rem; }
+  .z-stat { background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); padding: 1.1rem 1.25rem; box-shadow: var(--z-shadow); }
   .z-stat .label { font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; }
   .z-stat .value { font-family: var(--z-display); font-size: 1.75rem; font-weight: 600; line-height: 1.2; margin-top: .2rem; font-variant-numeric: tabular-nums; }
   .z-stat .value small { font-size: .95rem; font-weight: 500; color: var(--z-muted); margin-left: .15rem; }
@@ -331,31 +351,51 @@
 
   /* ---- spawn: sizes + template (markup from hub-ext/zai_platform.py options_form) ---- */
   .z-pill.is-bad  { background: var(--z-bad-soft);  color: var(--z-bad); }
-  .z-balance { margin: 0 0 1rem; color: var(--z-ink-2); font-variant-numeric: tabular-nums; }
+  .z-spawn { display: grid; gap: 1.5rem; }
+  .z-spawn-top { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center; }
+  .z-balance { margin: 0; color: var(--z-ink-2); font-variant-numeric: tabular-nums; }
   .z-balance.is-low { color: var(--z-warn); }
-  .z-sizes { display: grid; gap: .75rem; margin: 0; padding: 0; border: 0; min-width: 0; }
-  .z-sizes legend, .z-template { font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; margin-bottom: .25rem; }
+  .z-slots { display: grid; gap: .45rem; min-width: 15rem; padding: .85rem 1.1rem; background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); }
+  .z-slots-head { display: flex; justify-content: space-between; gap: 1rem; font-size: .85rem; }
+  .z-slots-bar { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; }
+  .z-slots-bar i { height: 8px; border-radius: 3px; background: var(--z-inset); }
+  .z-slots-bar i.on { background: var(--z-gold); }
+  .z-sizes, .z-tpls { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; margin: 0; padding: 0; border: 0; min-width: 0; }
+  .z-sizes legend, .z-tpls legend { grid-column: 1 / -1; float: none; font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; margin: 0 0 -.25rem; }
   .z-size {
-    display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: start;
-    background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius);
-    padding: 1rem 1.1rem; margin: 0; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+    display: flex; flex-direction: column; gap: 1rem; position: relative;
+    background: var(--z-surface); border: 1px solid var(--z-line); border-radius: var(--z-radius); box-shadow: var(--z-shadow);
+    padding: 1.4rem; margin: 0; cursor: pointer; transition: border-color .15s, box-shadow .15s;
   }
   .z-size:hover { border-color: var(--z-line-strong); }
-  .z-size:has(input:checked) { border-color: var(--z-gold); box-shadow: 0 0 0 3px var(--z-gold-soft); }
-  .z-size.is-full { opacity: .6; cursor: not-allowed; }
-  .z-size input { accent-color: var(--z-gold); width: 18px; height: 18px; margin: .2rem 0 0; }
-  .z-size-body { display: grid; gap: .2rem; justify-items: start; min-width: 0; }
-  .z-size-top { display: flex; flex-wrap: wrap; gap: .25rem 1rem; justify-content: space-between; width: 100%; }
-  .z-size-top strong { font-family: var(--z-display); font-size: 1.05rem; font-weight: 600; }
-  .z-size-price { font-family: var(--z-display); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .z-size-spec { font-size: .85rem; color: var(--z-ink-2); font-variant-numeric: tabular-nums; }
-  .z-size-desc { font-size: .85rem; color: var(--z-muted); }
-  .z-template { display: grid; gap: .4rem; margin-top: 1.25rem; text-transform: none; letter-spacing: 0; font-size: .875rem; color: var(--z-ink); }
-  .z-template select {
-    font: inherit; font-weight: 500; padding: .6rem .75rem; border-radius: 8px; max-width: 100%;
-    border: 1px solid var(--z-line-strong); background: var(--z-surface); color: var(--z-ink);
+  .z-size:has(input:checked) { border-color: var(--z-gold); box-shadow: 0 0 0 1px var(--z-gold), var(--z-shadow); }
+  .z-size.is-full { opacity: .55; cursor: not-allowed; }
+  .z-size input, .z-tpl input { accent-color: var(--z-gold); width: 18px; height: 18px; margin: 0; flex: none; }
+  .z-size-top { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; align-items: flex-start; }
+  .z-size-name { display: flex; gap: .55rem; align-items: center; font-family: var(--z-display); font-size: 1.2rem; font-weight: 600; }
+  .z-size-price { display: flex; align-items: baseline; gap: .4rem; flex-wrap: wrap; }
+  .z-size-price b { font-family: var(--z-display); font-size: 2.1rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+  .z-size-price span { color: var(--z-muted); font-size: .85rem; }
+  .z-size-spec { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; padding-top: 1rem; border-top: 1px solid var(--z-line); }
+  .z-size-spec span { display: grid; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; }
+  .z-size-spec b { font-family: var(--z-display); font-size: .95rem; letter-spacing: 0; text-transform: none; color: var(--z-ink); font-weight: 600; }
+  .z-size-desc { font-size: .875rem; color: var(--z-ink-2); }
+  .z-tpl {
+    display: flex; gap: .75rem; align-items: flex-start; padding: 1rem 1.1rem; margin: 0; cursor: pointer;
+    background: var(--z-inset); border: 1px solid var(--z-line); border-radius: 12px; transition: border-color .15s, background .15s;
   }
-  .z-template-desc { font-weight: 400; color: var(--z-muted); font-size: .85rem; }
+  .z-tpl:has(input:checked) { border-color: var(--z-gold); background: var(--z-gold-soft); }
+  .z-tpl:has(input:disabled) { opacity: .45; cursor: not-allowed; }
+  .z-tpl input { margin-top: .15rem; }
+  .z-tpl b { display: block; font-family: var(--z-display); font-weight: 600; }
+  .z-tpl small { display: block; color: var(--z-muted); font-size: .82rem; line-height: 1.45; margin-top: .15rem; }
+  .z-spawn-bar {
+    position: sticky; bottom: 1rem; z-index: 5; display: flex; flex-wrap: wrap; gap: .75rem 1.25rem; align-items: center; justify-content: space-between;
+    background: var(--z-graphite); color: #b6bbc3; border: 1px solid #3a4049; border-radius: var(--z-radius);
+    padding: .85rem 1rem .85rem 1.25rem; box-shadow: 0 12px 32px -12px rgba(0,0,0,.7); margin-top: 1.5rem;
+  }
+  .z-spawn-bar b { color: #e6e8eb; }
+  #z-summary { font-size: .9rem; font-variant-numeric: tabular-nums; }
 
   /* ---- account / billing ---- */
   .z-nav-balance { font-variant-numeric: tabular-nums; font-weight: 700 !important; }
@@ -369,6 +409,52 @@
   .z-steps { margin: 0; padding-left: 1.2rem; display: grid; gap: .6rem; }
   .z-topup { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .75rem; align-items: end; }
   .z-topup select.z-input { appearance: auto; }
+
+  /* ---- account overview ---- */
+  .z-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+  .z-overview .z-card { display: flex; flex-direction: column; gap: .9rem; margin: 0; }
+  .z-label { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--z-muted); font-weight: 700; }
+  .z-big { font-family: var(--z-display); font-size: clamp(2.25rem, 4vw, 3rem); font-weight: 600; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .z-mid { font-family: var(--z-display); font-size: 1.9rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+  .z-sub { color: var(--z-ink-2); font-size: .9rem; margin: 0; }
+  .z-sub strong { color: var(--z-ink); }
+  .z-figs { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+  .z-figs b { display: block; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+  .z-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: auto; }
+  .z-chart { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 4px; align-items: end; height: 72px; }
+  .z-chart i { display: block; min-height: 2px; border-radius: 3px; background: var(--z-line-strong); }
+  .z-chart i.is-today { background: var(--z-gold); }
+  .z-chart-axis { display: flex; justify-content: space-between; color: var(--z-muted); font-size: .75rem; }
+  .z-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; align-items: start; }
+  .z-two > .z-card { margin: 0; }
+  .z-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: .5rem; }
+  .z-card-head h2 { margin: 0; }
+  .z-picks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
+  .z-picks .z-btn[aria-pressed="true"] { background: var(--z-gold-soft); border-color: var(--z-gold); color: var(--z-gold-deep) !important; }
+  [data-bs-theme="dark"] .z-picks .z-btn[aria-pressed="true"] { color: var(--z-gold) !important; }
+  .z-guide { background: var(--z-inset); border-radius: 10px; padding: .8rem 1rem; font-size: .875rem; color: var(--z-ink-2); }
+  .z-activity { list-style: none; margin: 0; padding: 0; }
+  .z-activity li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 1rem; align-items: center; padding: .8rem 0; border-top: 1px solid var(--z-line); font-size: .9rem; }
+  .z-activity li:first-child { border-top: 0; }
+  .z-activity .what { min-width: 0; }
+  .z-activity .what b { display: block; font-weight: 600; overflow-wrap: anywhere; }
+  .z-activity .what small, .z-activity .when { color: var(--z-muted); font-size: .8rem; }
+  .z-activity .amt { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  @media (max-width: 560px) { .z-activity li { grid-template-columns: minmax(0, 1fr) auto; } .z-activity .when { display: none; } }
+
+  /* ---- endpoints: before serverless is switched on ---- */
+  .z-soon { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 2rem; align-items: center; padding: clamp(1.5rem, 4vw, 2.5rem); }
+  .z-soon h2 { font-size: clamp(1.4rem, 2.5vw, 1.75rem); line-height: 1.2; margin: .75rem 0 .5rem; }
+  .z-soon p { color: var(--z-ink-2); }
+  .z-how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 1.5rem; counter-reset: how2; }
+  .z-how-grid > div { display: grid; grid-template-columns: 2rem 1fr; gap: .85rem; align-items: start; font-size: .9rem; }
+  .z-how-grid > div::before {
+    counter-increment: how2; content: counter(how2); width: 2rem; height: 2rem; border-radius: 50%;
+    background: var(--z-gold-soft); color: var(--z-gold-deep); display: grid; place-items: center; font: 700 .85rem var(--z-display);
+  }
+  [data-bs-theme="dark"] .z-how-grid > div::before { color: var(--z-gold); }
+  .z-how-grid b { display: block; font-family: var(--z-display); font-weight: 600; }
+  .z-how-grid span { color: var(--z-muted); }
 
   /* ---- serverless endpoints ---- */
   .z-ep { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
@@ -390,6 +476,31 @@
   .z-ep-run textarea, #c-env { font-family: var(--z-mono); font-size: .85rem; }
   .z-ep-wide { grid-column: 1 / -1; }
 
+  /* ---- API tokens (templates/token.html) ---- */
+  .z-token-form { display: grid; gap: 1.25rem; margin: 0; }
+  .z-token-access { display: grid; gap: .6rem; border: 0; padding: 0; margin: 0; min-width: 0; }
+  .z-token-access legend { font-weight: 600; font-size: .875rem; color: var(--z-ink); margin: 0 0 .1rem; float: none; padding: 0; }
+  .z-token-access .z-pill { margin-left: .35rem; vertical-align: middle; }
+  .z-choice { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); border: 1px solid var(--z-line-strong); border-radius: 10px; overflow: hidden; }
+  .z-choice button { min-height: 44px; background: transparent; border: 0; border-left: 1px solid var(--z-line-strong); color: var(--z-ink-2); font: 600 .875rem var(--z-body); cursor: pointer; }
+  .z-choice button:first-child { border-left: 0; }
+  .z-choice button:hover { background: var(--z-inset); }
+  .z-choice button[aria-pressed="true"] { background: var(--z-gold-soft); color: var(--z-gold-deep); }
+  [data-bs-theme="dark"] .z-choice button[aria-pressed="true"] { color: var(--z-gold); }
+  .z-newtoken { display: grid; gap: .9rem; border-color: var(--z-gold); box-shadow: 0 0 0 1px var(--z-gold), var(--z-shadow); }
+  .z-newtoken .z-card-head { margin: 0; }
+  .z-newtoken-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; }
+  .z-newtoken-value {
+    display: block; min-width: 0; overflow-x: auto; white-space: nowrap; padding: .7rem .9rem; border-radius: 10px;
+    background: var(--z-inset); border: 1px solid var(--z-line); font: 500 .9rem/1.6 var(--z-mono); color: var(--z-ink);
+  }
+  .z-newtoken-value.is-hidden { filter: blur(6px); user-select: none; }
+  @media (max-width: 560px) { .z-newtoken-row { grid-template-columns: 1fr 1fr; } .z-newtoken-value { grid-column: 1 / -1; } }
+  .z-scopes summary { cursor: pointer; color: var(--z-ink-2); font-size: .85rem; }
+  .z-scopes code { display: block; margin-top: .25rem; font-size: .78rem; }
+  .z-empty-box { display: grid; gap: .3rem; justify-items: center; text-align: center; padding: 1.75rem 1rem; border: 1px dashed var(--z-line-strong); border-radius: 12px; color: var(--z-muted); font-size: .9rem; }
+  .z-empty-box strong { color: var(--z-ink); font-weight: 600; }
+
   [data-bs-theme="dark"] .modal-content { background: var(--z-surface); color: var(--z-ink); }
 
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -399,14 +510,10 @@
 {% block nav_bar_left_items %}
     {{ super() }}
     {% if user %}
-        {% set zb = zai_balance if zai_balance is defined else None %}
-        <li class="nav-item"><a class="nav-link" href="{{base_url}}account">Account{% if zb %} <span class="z-nav-balance{% if zb.low %} is-low{% endif %}">{{ zb.text }}</span>{% endif %}</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}account">Account</a></li>
         {% if zai_serverless is defined and zai_serverless %}<li class="nav-item"><a class="nav-link" href="{{base_url}}endpoints">Endpoints</a></li>{% endif %}
-        {# Set by hub-ext/zai_caimex.py; absent or false when Caimex is not configured. #}
-        {% if caimex_on is defined and caimex_on %}<li class="nav-item"><a class="nav-link" href="{{base_url}}caimex" target="_blank" rel="noopener">Open Caimex</a></li>{% endif %}
     {% endif %}
     {% if user and not user.admin %}<li class="nav-item"><a class="nav-link" href="{{base_url}}my-usage">Usage</a></li>{% endif %}
-    <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
     {% if user and user.admin %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Approve users</a></li>
         {% set zcr = zai_credit if zai_credit is defined else None %}
@@ -414,3 +521,35 @@
         <li class="nav-item"><a class="nav-link" href="{{base_url}}usage">Usage</a></li>
     {% endif %}
 {% endblock %}
+
+{# Overrides the stock login widget: the balance and Open Caimex sit beside
+   the user's name. #}
+{% block login_widget %}
+<span id="login_widget">
+  {% if user %}
+    {% set zb = zai_balance if zai_balance is defined else None %}
+    {% if zb %}<a class="z-nav-chip{% if zb.low %} is-low{% endif %}" href="{{base_url}}account" title="Your balance">{{ zb.text }}</a>{% endif %}
+    {# Set by hub-ext/zai_caimex.py; absent or false when Caimex is not configured. #}
+    {% if caimex_on is defined and caimex_on %}<a class="z-nav-cta" href="{{base_url}}caimex" target="_blank" rel="noopener">Open Caimex
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg></a>{% endif %}
+    <span class="z-avatar" aria-hidden="true">{{ user.name[:1] | upper }}</span>
+    <span>{{ user.name }}</span>
+    <a id="logout" role="button" class="btn btn-sm btn-outline-contrast" href="{{ logout_url }}"><i aria-hidden="true" class="fa fa-sign-out"></i> Logout</a>
+  {% else %}
+    <a id="login" role="button" class="btn btn-sm btn-outline-contrast" href="{{ login_url }}">Login</a>
+  {% endif %}
+</span>
+{% endblock login_widget %}
+
+{% block script %}
+{{ super() }}
+<script>
+  // Mark the nav link for the page being shown (the template does not know it).
+  (function () {
+    var here = location.pathname.replace(/\/+$/, "");
+    document.querySelectorAll(".navbar .nav-link[href]").forEach(function (a) {
+      if (a.pathname.replace(/\/+$/, "") === here) a.setAttribute("aria-current", "page");
+    });
+  })();
+</script>
+{% endblock script %}

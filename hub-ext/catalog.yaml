@@ -46,6 +46,10 @@ billing:
 # scripts/11-gpu-layout.sh, which prints the block to paste here.
 gpu_pools:
   nvidia.com/gpu: 7
+# What the start page calls each pool ("H200 slices free: 5 of 7"). Optional;
+# a pool not named here is called "GPU slices".
+gpu_pool_labels:
+  nvidia.com/gpu: "H200 slices"
 
 sizes:
   - slug: gpu-18

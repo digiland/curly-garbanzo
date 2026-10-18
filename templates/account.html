@@ -1,12 +1,18 @@
 {% extends "page.html" %}
 {# Served by AccountHandler (hub-ext/zai_platform.py) at /hub/account.
    `acct` = {balance, accruing, running[]}, all money in micros; format with
-   money() / rate_str(). `history` is the newest 100 ledger rows. #}
+   money() / rate_str(). `history` is the newest 100 ledger rows; the page
+   shows 10 and My usage has the rest. `zai_month` (hub-ext/zai_myusage.py)
+   and `zai_credit` (hub-ext/zai_credit.py) are absent when those modules
+   are not loaded. #}
 
 {% block title %}Account · ZAI Notebooks{% endblock %}
 
 {% block main %}
 {% set zc = zai_credit if zai_credit is defined else None %}
+{% set zm = zai_month if zai_month is defined else None %}
+{% set dz = catalog.default_size %}
+{% set live = acct.running[0] if acct.running else None %}
 <div class="z-page">
   <div class="z-page-head">
     <div>
@@ -14,16 +20,10 @@
       <h1>Account</h1>
       <p>Prepaid credit, charged by the second while a server runs. A stopped server costs nothing, and your files are kept.</p>
     </div>
-  </div>
-
-  <div class="z-stats">
-    {% if admin_free %}
-    <div class="z-stat"><div class="label">Balance</div><div class="value">Not charged</div></div>
-    {% else %}
-    <div class="z-stat"><div class="label">Balance</div><div class="value">{{ money(acct.balance) }}</div></div>
-    {% endif %}
-    <div class="z-stat"><div class="label">Running now</div><div class="value">{{ acct.running | length }}</div></div>
-    <div class="z-stat"><div class="label">This session so far</div><div class="value">{{ money(acct.accruing) }}</div></div>
+    <div class="z-actions">
+      <a class="z-btn is-quiet" href="{{ base_url }}my-usage">My usage</a>
+      <a class="z-btn" href="{{ base_url }}spawn">Start a server</a>
+    </div>
   </div>
 
   {% if not admin_free and acct.balance <= catalog.low_balance %}
@@ -34,58 +34,153 @@
   </p>
   {% endif %}
 
-  {% if zc and not zc.free %}
-  {# The request form and its status, from hub-ext/zai_credit.py (`zai_credit`). #}
-  <section class="z-card" id="credit">
-    <h2>Request more credit</h2>
-    {% set r = zc.mine %}
-    {% if r and r.status == 'pending' %}
-    <p class="z-alert is-info" role="status">
-      Your request for <strong>{{ money(r.micros) }}</strong> by {{ zc.methods[r.method] or r.method }} is waiting, sent {{ when(r.created) }} UTC.
-      An administrator will email you payment details at {{ r.email or 'your sign-up address' }} and add the credit once your payment arrives.
-    </p>
-    <form method="post" action="{{ base_url }}credit/cancel" style="margin-top:.75rem">
-      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
-      <button type="submit" class="z-btn is-sm is-quiet">Cancel this request</button>
-    </form>
-    {% else %}
-    {% if r and r.status == 'approved' %}
-    <p class="z-alert is-ok" role="status">Your request #{{ r.id }} was approved on {{ when(r.decided) }} UTC: <strong>{{ money(r.granted) }}</strong> added.</p>
-    {% elif r and r.status == 'declined' %}
-    <p class="z-alert is-warn" role="status">Your request #{{ r.id }} for {{ money(r.micros) }} was declined on {{ when(r.decided) }} UTC: {{ r.reason }}</p>
+  <div class="z-overview">
+    <section class="z-card" aria-labelledby="o-balance">
+      <div class="z-label" id="o-balance">Balance</div>
+      {% if admin_free %}
+      <div class="z-big">Not charged</div>
+      <p class="z-sub">Administrators' servers are free.</p>
+      {% else %}
+      <div class="z-big">{{ money(acct.balance) }}</div>
+      {% if dz.rate > 0 and acct.balance > 0 %}{% set hrs = acct.balance / dz.rate %}
+      <p class="z-sub">About <strong>{{ '%.1f' | format(hrs) if hrs < 10 else '{:,}'.format(hrs | round | int) }} hours</strong> on {{ dz.name }}</p>
+      {% else %}
+      <p class="z-sub">Add credit to start a paid server.</p>
+      {% endif %}
+      {% if zc %}<div class="z-actions"><a class="z-btn is-quiet" href="#credit">Request more credit</a></div>{% endif %}
+      {% endif %}
+    </section>
+
+    <section class="z-card" aria-labelledby="o-running">
+      <div class="z-card-head" style="margin:0">
+        <div class="z-label" id="o-running">Running now</div>
+        {% if user.running or live %}<span class="z-pill is-ok">live</span>{% else %}<span class="z-pill">stopped</span>{% endif %}
+      </div>
+      {% if live %}
+      <div class="z-mid" style="font-size:1.35rem">{{ size_name(live.size) }}{% if acct.running | length > 1 %} <small class="z-sub">+{{ acct.running | length - 1 }} more</small>{% endif %}</div>
+      <div class="z-figs">
+        <div><span class="z-label">For</span><b>{{ dur(now - live.started) }}</b></div>
+        <div><span class="z-label">So far</span><b>{{ money(live.cost) }}</b></div>
+        <div><span class="z-label">Rate</span><b>{{ rate_str(live.rate) }}</b></div>
+      </div>
+      {% elif user.running %}
+      <div class="z-mid" style="font-size:1.35rem">Your server</div>
+      <p class="z-sub">Running{% if admin_free %}, not charged{% endif %}.</p>
+      {% else %}
+      <div class="z-mid" style="font-size:1.35rem">Nothing running</div>
+      <p class="z-sub">Nothing is being charged.</p>
+      {% endif %}
+      <div class="z-actions">
+        {% if user.running %}
+        <a class="z-btn" href="{{ user.url }}">Open JupyterLab</a>
+        <a class="z-btn is-quiet" href="{{ base_url }}home">Manage</a>
+        {% else %}
+        <a class="z-btn is-quiet" href="{{ base_url }}spawn">Start a server</a>
+        {% endif %}
+      </div>
+    </section>
+
+    {% if zm %}
+    <section class="z-card" aria-labelledby="o-month">
+      <div class="z-label" id="o-month">This month</div>
+      <div style="display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap">
+        {% if admin_free %}
+        <div class="z-mid">{{ '%.1f' | format(zm.gpu_secs / 3600) }}<small class="z-sub"> GPU h</small></div>
+        {% else %}
+        <div class="z-mid">{{ money(zm.cost) }}</div>
+        <span class="z-sub">{{ '%.1f' | format(zm.gpu_secs / 3600) }} GPU hours</span>
+        {% endif %}
+      </div>
+      <div class="z-chart" role="img" aria-label="{% if admin_free %}Hours{% else %}Spend{% endif %} per day, last 14 days">
+        {% for d in zm.days %}<i{% if loop.last %} class="is-today"{% endif %} style="height:{{ d.pct }}%" title="{{ d.day }}: {% if admin_free %}{{ '%.1f' | format(d.secs / 3600) }} h{% else %}{{ money(d.cost) }}{% endif %}"></i>{% endfor %}
+      </div>
+      <div class="z-chart-axis"><span>{{ zm.days[0].day }}</span><span>Today</span></div>
+    </section>
     {% endif %}
-    <p>Ask for credit here. An administrator will email you payment details, and adds the credit once your payment arrives.</p>
-    <form method="post" action="{{ base_url }}credit/request" class="z-topup" id="credit-form">
-      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
-      <div class="z-field" style="grid-column:1/-1">
-        <label for="c-amount">Amount ({{ catalog.currency }})</label>
-        <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-          {% for p in zc.presets %}<button type="button" class="z-btn is-sm is-quiet" data-amount="{{ p }}">{{ zc.symbol }}{{ p }}</button>{% endfor %}
-          <input id="c-amount" name="amount" class="z-input" style="max-width:9rem" inputmode="decimal"
-                 pattern="[0-9]{1,4}(\.[0-9]{1,2})?" placeholder="25" required
+  </div>
+
+  <div class="z-two">
+    {% if zc and not zc.free %}
+    {# The request form and its status, from hub-ext/zai_credit.py (`zai_credit`). #}
+    <section class="z-card" id="credit" style="display:grid;gap:1rem">
+      <div>
+        <h2 style="margin-bottom:.25rem">Request more credit</h2>
+        {% set r = zc.mine %}
+        {% if not (r and r.status == 'pending') %}<p class="z-sub" style="margin:0">An administrator emails you payment details, and adds the credit once your payment arrives.</p>{% endif %}
+      </div>
+      {% if r and r.status == 'pending' %}
+      <p class="z-alert is-info" role="status">
+        Your request for <strong>{{ money(r.micros) }}</strong> by {{ zc.methods[r.method] or r.method }} is waiting, sent {{ when(r.created) }} UTC.
+        An administrator will email you payment details at {{ r.email or 'your sign-up address' }} and add the credit once your payment arrives.
+      </p>
+      <form method="post" action="{{ base_url }}credit/cancel">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <button type="submit" class="z-btn is-sm is-quiet">Cancel this request</button>
+      </form>
+      {% else %}
+      {% if r and r.status == 'approved' %}
+      <p class="z-alert is-ok" role="status">Your request #{{ r.id }} was approved on {{ when(r.decided) }} UTC: <strong>{{ money(r.granted) }}</strong> added.</p>
+      {% elif r and r.status == 'declined' %}
+      <p class="z-alert is-warn" role="status">Your request #{{ r.id }} for {{ money(r.micros) }} was declined on {{ when(r.decided) }} UTC: {{ r.reason }}</p>
+      {% endif %}
+      <form method="post" action="{{ base_url }}credit/request" class="z-topup" id="credit-form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <div class="z-field" style="grid-column:1/-1">
+          <label for="c-amount">Amount ({{ catalog.currency }})</label>
+          <div class="z-picks" role="group" aria-label="Quick amounts">
+            {% for p in zc.presets %}<button type="button" class="z-btn is-quiet" data-amount="{{ p }}" aria-pressed="false">{{ zc.symbol }}{{ p }}</button>{% endfor %}
+          </div>
+          <input id="c-amount" name="amount" class="z-input" inputmode="decimal"
+                 pattern="[0-9]{1,4}(\.[0-9]{1,2})?" placeholder="Or type an amount, e.g. 25" required
                  aria-describedby="c-guide">
+          <span class="z-guide" id="c-guide">Any amount from {{ zc.symbol }}{{ zc.min }} to {{ zc.symbol }}{{ "{:,}".format(zc.max) }}.</span>
         </div>
-        <span class="hint" id="c-guide">Any amount from {{ zc.symbol }}{{ zc.min }} to {{ zc.symbol }}{{ "{:,}".format(zc.max) }}.</span>
-      </div>
-      <div class="z-field">
-        <label for="c-method">How you'll pay</label>
-        <select id="c-method" name="method" class="z-input" required>
-          {% for k, v in zc.methods.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
-        </select>
-      </div>
-      <div class="z-field">
-        <label for="c-reference">Payment reference (optional)</label>
-        <input id="c-reference" name="reference" class="z-input" maxlength="{{ zc.reference_max }}" placeholder="If you've already paid">
-      </div>
-      <div class="z-field" style="grid-column:1/-1">
-        <label for="c-note">Note (optional)</label>
-        <input id="c-note" name="note" class="z-input" maxlength="{{ zc.note_max }}" placeholder="Anything the administrator should know">
-      </div>
-      <div><button type="submit" class="z-btn is-block">Send request</button></div>
-    </form>
+        <div class="z-field">
+          <label for="c-method">How you'll pay</label>
+          <select id="c-method" name="method" class="z-input" required>
+            {% for k, v in zc.methods.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="z-field">
+          <label for="c-reference">Payment reference (optional)</label>
+          <input id="c-reference" name="reference" class="z-input" maxlength="{{ zc.reference_max }}" placeholder="If you've already paid">
+        </div>
+        <div class="z-field" style="grid-column:1/-1">
+          <label for="c-note">Note (optional)</label>
+          <input id="c-note" name="note" class="z-input" maxlength="{{ zc.note_max }}" placeholder="Anything the administrator should know">
+        </div>
+        <div style="grid-column:1/-1"><button type="submit" class="z-btn is-block">Send request</button></div>
+      </form>
+      {% endif %}
+    </section>
     {% endif %}
-  </section>
-  {% endif %}
+
+    <section class="z-card">
+      <div class="z-card-head">
+        <h2>Recent activity</h2>
+        <a href="{{ base_url }}my-usage" style="font-weight:600;font-size:.9rem">See all usage</a>
+      </div>
+      {% if history %}
+      <ul class="z-activity">
+        {% for h in history[:10] %}
+        <li>
+          <div class="what">
+            {% if h.kind == 'usage' %}<b>{{ h.note }}</b><small>Server time</small>
+            {% elif h.kind == 'topup' %}<b>Credit added</b>{% if h.note %}<small>{{ h.note }}</small>{% endif %}
+            {% elif h.kind == 'signup' %}<b>{{ h.note or 'Welcome credit' }}</b>
+            {% else %}<b>Adjustment</b>{% if h.note %}<small>{{ h.note }}</small>{% endif %}{% endif %}
+          </div>
+          <span class="when">{{ when(h.ts) }} UTC</span>
+          <span class="amt {{ 'z-amount-pos' if h.micros > 0 else 'z-amount-neg' }}">{{ ('+' if h.micros > 0 else '') ~ money(h.micros) }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if history | length > 10 %}<p class="z-empty" style="margin-top:.75rem">Showing the latest 10. <a href="{{ base_url }}my-usage?period=all">My usage</a> has every session, totals by month, and downloads.</p>{% endif %}
+      {% else %}
+        <p class="z-empty">No charges or credits yet.</p>
+      {% endif %}
+    </section>
+  </div>
 
   <section class="z-card">
     <h2>Prices</h2>
@@ -106,40 +201,16 @@
     </div>
   </section>
 
-  <section class="z-card">
-    <h2>History</h2>
-    <p class="z-empty" style="margin-bottom:.75rem">Your last 100 charges and credits. <a href="{{ base_url }}my-usage">My usage</a> has totals by month, every session, and downloads.</p>
-    {% if acct.running %}
-      {% for r in acct.running %}
-      <p class="z-empty">Running: {{ size_name(r.size) }} since {{ when(r.started) }} UTC, {{ dur(now - r.started) }} so far, {{ money(r.cost) }} at {{ rate_str(r.rate) }}.</p>
-      {% endfor %}
-    {% endif %}
-    {% if history %}
-    <div class="z-table-wrap">
-      <table class="z-table">
-        <thead><tr><th>When (UTC)</th><th>What</th><th class="num">Amount</th></tr></thead>
-        <tbody>
-          {% for h in history %}
-          <tr>
-            <td>{{ when(h.ts) }}</td>
-            <td>{% if h.kind == 'usage' %}{{ h.note }}{% elif h.kind == 'topup' %}Credit added{% if h.note %} · {{ h.note }}{% endif %}{% elif h.kind == 'signup' %}{{ h.note or 'Welcome credit' }}{% else %}Adjustment{% if h.note %} · {{ h.note }}{% endif %}{% endif %}</td>
-            <td class="num {{ 'z-amount-pos' if h.micros > 0 else 'z-amount-neg' }}">{{ ('+' if h.micros > 0 else '') ~ money(h.micros) }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-      <p class="z-empty">No charges or credits yet.</p>
-    {% endif %}
-  </section>
-
   <section class="z-card" id="security">
-    <h2>Sign-in security</h2>
+    <div class="z-card-head" style="flex-wrap:wrap">
+      <h2>Sign-in security</h2>
+      <div class="z-actions">
+        <a class="z-btn is-sm{% if two_factor %} is-quiet{% endif %}" role="button" href="{{ base_url }}account/2fa">{% if two_factor %}Manage two-factor{% else %}Set up two-factor sign-in{% endif %}</a>
+        <a class="z-btn is-sm is-quiet" role="button" href="{{ base_url }}change-password">Change password</a>
+      </div>
+    </div>
     <p>Two-factor sign-in is {% if two_factor %}<span class="z-pill is-ok">on</span>{% else %}<span class="z-pill">off</span>{% endif %}.
       {% if two_factor %}Sign-in asks for a code from your authenticator app.{% else %}Add a code from an authenticator app on your phone, so a stolen password isn't enough.{% endif %}</p>
-    <p><a class="z-btn is-sm{% if two_factor %} is-quiet{% endif %}" role="button" href="{{ base_url }}account/2fa">{% if two_factor %}Manage{% else %}Set up two-factor sign-in{% endif %}</a>
-      <a class="z-btn is-sm is-quiet" role="button" href="{{ base_url }}change-password">Change password</a></p>
   </section>
 
   <section class="z-card" id="connect">
@@ -171,9 +242,11 @@ ssh zai</div></div></li>
     var form = document.getElementById("credit-form");
     if (!form) return;
     var input = document.getElementById("c-amount"), guide = document.getElementById("c-guide");
+    var picks = form.querySelectorAll("[data-amount]");
     var plain = guide.textContent, symbol = {{ zc.symbol | tojson }}, vat = {{ zc.vat_percent | tojson }};
     var sizes = {{ zc.sizes | tojson }}, min = {{ zc.min }}, max = {{ zc.max }};
     function show() {
+      picks.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.amount === input.value)); });
       var a = parseFloat(input.value);
       if (!(a >= min && a <= max)) { guide.textContent = plain; return; }
       var parts = sizes.map(function (z) { return (a / z.rate).toFixed(1) + " hours on " + z.name; });
@@ -181,8 +254,8 @@ ssh zai</div></div></li>
       if (vat > 0) text += " Includes " + symbol + (a * vat / (100 + vat)).toFixed(2) + " VAT.";
       guide.textContent = text;
     }
-    form.querySelectorAll("[data-amount]").forEach(function (b) {
-      b.addEventListener("click", function () { input.value = b.dataset.amount; show(); input.focus(); });
+    picks.forEach(function (b) {
+      b.addEventListener("click", function () { input.value = b.dataset.amount; show(); });
     });
     input.addEventListener("input", show);
   })();

@@ -24,24 +24,20 @@ HOUR = 3600
 
 # The real zai_platform on a stand-in for KubeSpawner, as in test_zai_credit.
 # Other test files put their own stand-in zai_platform in sys.modules; it is
-# put back after. If an earlier test file already loaded the real one, that
-# one is reused, so both point at the same database.
-_real = sys.modules.get("zai_platform")
-if not hasattr(_real, "Catalog"):
-    os.environ["ZAI_DB"] = os.path.join(tempfile.mkdtemp(), "usage.sqlite")
-    os.environ["ZAI_CATALOG"] = os.path.join(HERE, "catalog.yaml")
-    _SAVED = {k: sys.modules.pop(k, None) for k in ("zai_platform", "kubespawner")}
-    sys.modules["kubespawner"] = types.SimpleNamespace(KubeSpawner=object)
-    import zai_platform  # noqa: E402
-    import zai_myusage  # noqa: E402
-    for _k, _v in _SAVED.items():
-        if _v is None:
-            sys.modules.pop(_k, None)
-        else:
-            sys.modules[_k] = _v
-else:
-    import zai_platform  # noqa: E402
-    import zai_myusage  # noqa: E402
+# put back after.
+os.environ["ZAI_DB"] = os.path.join(tempfile.mkdtemp(), "usage.sqlite")
+os.environ["ZAI_CATALOG"] = os.path.join(HERE, "catalog.yaml")
+# Fresh copies, so this file's zai_myusage uses this file's zai_platform (and
+# its database) whatever other test files loaded first.
+_SAVED = {k: sys.modules.pop(k, None) for k in ("zai_platform", "kubespawner", "zai_myusage")}
+sys.modules["kubespawner"] = types.SimpleNamespace(KubeSpawner=object)
+import zai_platform  # noqa: E402  (hub-ext is this file's own directory)
+import zai_myusage  # noqa: E402
+for _k, _v in _SAVED.items():
+    if _v is None:
+        sys.modules.pop(_k, None)
+    else:
+        sys.modules[_k] = _v
 
 GPU = 1_320_000      # $1.32/h in micros
 CPU = 60_000
@@ -146,6 +142,41 @@ class Report(Case):
         self.credit(ts(2026, 10, 2), 99 * MICROS, user="rudo")
         _, _, t = self.report(self.SINCE, self.UNTIL)
         self.assertEqual(t["credit"], 30 * MICROS)
+
+
+class Month(Case):
+    NOW = ts(2026, 10, 18, 12)
+
+    def month(self):
+        real = zai_myusage.time.time
+        zai_myusage.time.time = lambda: self.NOW
+        try:
+            return zai_myusage._mu_month(types.SimpleNamespace(name="tendai", kind="user"))
+        finally:
+            zai_myusage.time.time = real
+
+    def test_totals_and_fourteen_days_ending_today(self):
+        self.session(ts(2026, 10, 18, 9), ts(2026, 10, 18, 11))      # today, 2 h
+        self.session(ts(2026, 10, 10, 9), ts(2026, 10, 10, 10))      # 1 h
+        self.session(ts(2026, 9, 30, 9), ts(2026, 9, 30, 10))        # last month: chart only
+        m = self.month()
+        self.assertEqual((m["cost"], m["gpu_secs"]), (3 * GPU, 3 * HOUR))
+        self.assertEqual(len(m["days"]), 14)
+        self.assertEqual((m["days"][0]["day"], m["days"][-1]["day"]), ("5 Oct", "18 Oct"))
+        self.assertEqual([d["pct"] for d in m["days"] if d["pct"]], [50, 100])
+
+    def test_free_account_charts_hours(self):
+        self.session(ts(2026, 10, 18, 9), ts(2026, 10, 18, 10), rate=0)
+        m = self.month()
+        self.assertEqual((m["cost"], m["days"][-1]["pct"]), (0, 100))
+
+    def test_nothing_yet(self):
+        m = self.month()
+        self.assertEqual((m["cost"], m["sessions"]), (0, 0))
+        self.assertTrue(all(d["pct"] == 0 for d in m["days"]))
+
+    def test_services_get_nothing(self):
+        self.assertIsNone(zai_myusage._mu_month(None))
 
 
 class Page(Case):

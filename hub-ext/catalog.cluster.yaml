@@ -26,6 +26,9 @@ billing:
 gpu_pools:
   mig-slices: 7       # MIG 1g.18gb slices on caimex.io/pool=mig nodes
   whole-gpus: 8       # full GPUs on caimex.io/pool=gpu nodes
+gpu_pool_labels:
+  mig-slices: "H200 slices"
+  whole-gpus: "Whole H200s"
 
 sizes:
   - slug: cpu

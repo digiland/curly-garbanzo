@@ -3,7 +3,10 @@
 The admin Usage page (/hub/usage, zai_platform) shows everyone's hours; the
 Account page shows a user's last 100 ledger rows. This page gives a user their
 own totals for a period, a breakdown by size, every session, and two CSV
-downloads: their sessions, and a statement of charges and credits. Loaded by
+downloads: their sessions, and a statement of charges and credits. It also
+gives the Account page this month's totals and a 14-day chart (zai_month),
+and Home its figures (zai_home).
+Loaded by
 charts/jupyterhub-values.yaml, 03-zai-platform, after zai_platform (whose
 catalog and database it reads; it writes nothing).
 
@@ -127,7 +130,84 @@ class MyUsageHandler(BaseHandler):
         self.finish(html)
 
 
+def _mu_days(con, username, now, days=14):
+    """Spend per UTC day for the last `days` days, oldest first, today last."""
+    today = datetime.fromtimestamp(now, timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    out = []
+    for i in range(days - 1, -1, -1):
+        start = today - i * 86400
+        _, _, t = _mu_report(con, username, start, min(start + 86400, now), now)
+        out.append({"day": datetime.fromtimestamp(start, timezone.utc).strftime("%d %b").lstrip("0"),
+                    "cost": t["cost"], "secs": t["gpu_secs"] + t["cpu_secs"]})
+    # Bars by cost; a free account (cost always 0) gets them by hours.
+    key = "cost" if any(d["cost"] for d in out) else "secs"
+    top = max(d[key] for d in out)
+    for d in out:
+        d["pct"] = round(100 * d[key] / top) if top else 0
+    return out
+
+
+def _mu_month(user):
+    """template_vars: this month's spend and hours, and the last 14 days, for
+    the Account page; None for services or if the database cannot be read."""
+    if user is None or getattr(user, "kind", "user") != "user":
+        return None
+    try:
+        now = time.time()
+        since, until = _mu_window("month", now)
+        with zai_platform._db() as con:
+            _, _, t = _mu_report(con, user.name, since, until, now)
+            days = _mu_days(con, user.name, now)
+        return {"cost": t["cost"], "gpu_secs": t["gpu_secs"], "cpu_secs": t["cpu_secs"],
+                "sessions": t["sessions"], "days": days}
+    except Exception:
+        return None
+
+
+def _mu_hours(micros, rate):
+    """How many hours `micros` buys at `rate` micros an hour, as text, or ''."""
+    if rate <= 0 or micros <= 0:
+        return ""
+    h = micros / rate
+    return f"{h:.1f}" if h < 10 else f"{round(h):,}"
+
+
+def _mu_home(user):
+    """template_vars: what Home shows, already formatted (Home's handler is
+    JupyterHub's own and passes no money helpers): the balance, the running
+    session's figures, and each size with its price and the hours the
+    balance buys. None for services or if the database cannot be read."""
+    if user is None or getattr(user, "kind", "user") != "user":
+        return None
+    try:
+        cat = zai_platform.CATALOG
+        now = time.time()
+        free = user.admin and cat.admins_free
+        with zai_platform._db() as con:
+            acct = zai_platform.account(con, user.name, now)
+        bal = acct["balance"]
+        running = [{"size": zai_platform._size_name(r["size"]), "for": zai_platform._dur(now - r["started"]),
+                    "cost": cat.money(r["cost"]), "rate": cat.rate_str(r["rate"])} for r in acct["running"]]
+        sizes = []
+        for z in cat.sizes:
+            v = z["rate"] / zai_platform.MICROS
+            sizes.append({
+                "slug": z["slug"], "name": z["name"], "default": z["default"],
+                "vram": f"{z['gpu'].get('vram_gb') or '?'} GB VRAM" if z["gpu"] else "No GPU",
+                "price": "Free" if free else (f"{cat.symbol}{v:,.2f}" if v >= 0.01 else f"{cat.symbol}{v:,.3f}"),
+                "hours": "" if free else _mu_hours(bal, z["rate"])})
+        return {"free": free, "balance": cat.money(bal), "low": bal <= cat.low_balance,
+                "running": running, "sizes": sizes, "note": cat.price_note}
+    except Exception:
+        return None
+
+
 def configure(c):
     handlers = list(c.JupyterHub.get("extra_handlers", []) or [])
     handlers.append((r"/my-usage", MyUsageHandler))
     c.JupyterHub.extra_handlers = handlers
+    # JupyterHub calls any callable in template_vars with the current user.
+    tv = dict(c.JupyterHub.get("template_vars", {}) or {})
+    tv["zai_month"] = _mu_month
+    tv["zai_home"] = _mu_home
+    c.JupyterHub.template_vars = tv
