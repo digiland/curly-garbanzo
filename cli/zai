@@ -215,6 +215,8 @@ def cmd_sizes(a):
     print("\nTEMPLATES")
     for t in cat["templates"]:
         print(f"  {t['slug']:<12} {t['name']} -- {t['description']}")
+    if cat.get("price_note"):
+        print(f"\nPrices are per hour, {cat['price_note']}.")
     if not cat["enforce"]:
         print("\n(billing is in record-only mode on this hub)")
 
