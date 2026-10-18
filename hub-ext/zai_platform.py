@@ -15,7 +15,7 @@ the hub-zai ConfigMap (hub-ext/ in the repo). Everything is in one SQLite file
 on the hub PVC, next to jupyterhub.sqlite, so it survives upgrades.
 
 Money is stored as integer *micros* (millionths of the currency unit). A
-$0.49/h slice costs ~136 micros a second; with cents, short sessions would
+$1.32/h slice costs ~367 micros a second; with cents, short sessions would
 round to nothing.
 """
 
@@ -71,6 +71,8 @@ class Catalog:
         cur = data.get("currency") or {}
         self.currency = str(cur.get("code", "USD"))
         self.symbol = str(cur.get("symbol", "$"))
+        # Said after every price, e.g. "incl. VAT"; empty says nothing.
+        self.price_note = str(cur.get("price_note") or "").strip()
 
         b = data.get("billing") or {}
         self.enforce = bool(b.get("enforce", False))
@@ -168,7 +170,8 @@ class Catalog:
 
     def rate_str(self, micros_per_hour):
         v = micros_per_hour / MICROS
-        return f"{self.symbol}{v:,.2f}/h" if v >= 0.1 else f"{self.symbol}{v:,.3f}/h"
+        s = f"{self.symbol}{v:,.2f}/h" if v >= 0.1 else f"{self.symbol}{v:,.3f}/h"
+        return f"{s} {self.price_note}" if self.price_note else s
 
     def profile_list(self):
         """KubeSpawner profiles: one per size, with the templates as an option."""
@@ -957,7 +960,8 @@ def _catalog_json(con, user):
         })
     templates = [{k: t[k] for k in ("slug", "name", "description", "gpu_required", "default")}
                  for t in CATALOG.templates]
-    return {"currency": CATALOG.currency, "enforce": CATALOG.enforce, "sizes": sizes, "templates": templates,
+    return {"currency": CATALOG.currency, "price_note": CATALOG.price_note,
+            "enforce": CATALOG.enforce, "sizes": sizes, "templates": templates,
             "serverless": {"enabled": CATALOG.sv_enabled, "max_gpus": CATALOG.sv_max_gpus,
                            "max_workers_per_endpoint": CATALOG.sv_max_workers}}
 

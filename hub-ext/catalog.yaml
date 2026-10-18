@@ -3,10 +3,18 @@
 #
 # Prices are per hour of a server *running*, charged to the second. Money is
 # kept internally in millionths of the currency, so sub-cent rates are exact.
+#
+# Pricing basis: one whole H200 for an hour is $7.98 before VAT, $9.22 with
+# Zimbabwe's 15.5% VAT. A MIG slice is sold by its share of the GPU, in
+# sevenths: 1g (18 GB) is 1/7 = $1.14 before VAT, $1.32 with it. Every price
+# below INCLUDES VAT: it is what comes off the customer's balance. The VAT in
+# an amount is amount x 15.5 / 115.5.
 
 currency:
   code: USD
   symbol: "$"
+  # Shown after every price ("$1.32/h incl. VAT"). Empty to show none.
+  price_note: "incl. VAT"
 
 billing:
   # false: charges are recorded and balances shown, but nobody is refused or
@@ -45,7 +53,7 @@ sizes:
     cpu_guarantee: 0.5
     memory: 12G
     memory_guarantee: 1G
-    price_per_hour: 0.49
+    price_per_hour: 1.32         # 1/7 of $9.22
     default: true
 
   - slug: gpu-18-highmem
@@ -56,7 +64,7 @@ sizes:
     cpu_guarantee: 1
     memory: 24G
     memory_guarantee: 2G
-    price_per_hour: 0.69
+    price_per_hour: 1.86         # the 18 GB slice x 0.69/0.49, the old ratio
 
   - slug: cpu
     name: "CPU only"
@@ -65,7 +73,7 @@ sizes:
     cpu_guarantee: 0.5
     memory: 8G
     memory_guarantee: 1G
-    price_per_hour: 0.05
+    price_per_hour: 0.06         # $0.05 before VAT
 
   # With a mixed layout (scripts/11-gpu-layout.sh mixed), replace the sizes
   # above with ones like these. Resource names change under migStrategy=mixed.
@@ -73,15 +81,22 @@ sizes:
   # - slug: gpu-18
   #   name: "GPU · 18 GB"
   #   gpu: {resource: nvidia.com/mig-1g.18gb, count: 1, vram_gb: 18}
-  #   cpu: 2, memory: 12G ...                    price_per_hour: 0.49
+  #   cpu: 2, memory: 12G ...                    price_per_hour: 1.32
   # - slug: gpu-35
   #   name: "GPU · 35 GB"
   #   gpu: {resource: nvidia.com/mig-2g.35gb, count: 1, vram_gb: 35}
-  #   cpu: 4, memory: 24G ...                    price_per_hour: 0.99
+  #   cpu: 4, memory: 24G ...                    price_per_hour: 2.63
   # - slug: gpu-71
   #   name: "GPU · 71 GB"
   #   gpu: {resource: nvidia.com/mig-3g.71gb, count: 1, vram_gb: 71}
-  #   cpu: 8, memory: 48G ...                    price_per_hour: 1.89
+  #   cpu: 8, memory: 48G ...                    price_per_hour: 3.95
+  #
+  # With the whole layout (scripts/11-gpu-layout.sh whole), one size:
+  #
+  # - slug: gpu-141
+  #   name: "GPU · whole H200"
+  #   gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 141}
+  #   cpu: 16, memory: 96G ...                   price_per_hour: 9.22
 
 # Serverless endpoints (serverless/, docs/SERVERLESS.md). Workers are billed
 # like servers -- by the second at their size's price, from pod creation to
