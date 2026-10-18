@@ -405,6 +405,7 @@
         {# Set by hub-ext/zai_caimex.py; absent or false when Caimex is not configured. #}
         {% if caimex_on is defined and caimex_on %}<li class="nav-item"><a class="nav-link" href="{{base_url}}caimex" target="_blank" rel="noopener">Open Caimex</a></li>{% endif %}
     {% endif %}
+    {% if user and not user.admin %}<li class="nav-item"><a class="nav-link" href="{{base_url}}my-usage">Usage</a></li>{% endif %}
     <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
     {% if user and user.admin %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Approve users</a></li>

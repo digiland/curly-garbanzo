@@ -108,6 +108,7 @@
 
   <section class="z-card">
     <h2>History</h2>
+    <p class="z-empty" style="margin-bottom:.75rem">Your last 100 charges and credits. <a href="{{ base_url }}my-usage">My usage</a> has totals by month, every session, and downloads.</p>
     {% if acct.running %}
       {% for r in acct.running %}
       <p class="z-empty">Running: {{ size_name(r.size) }} since {{ when(r.started) }} UTC, {{ dur(now - r.started) }} so far, {{ money(r.cost) }} at {{ rate_str(r.rate) }}.</p>
