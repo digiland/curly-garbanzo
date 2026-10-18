@@ -295,6 +295,9 @@ hub:
       # (hub-ext/zai_credit.py). After zai_platform: it uses its ledger.
       import zai_credit
       zai_credit.configure(c)
+      # Each user's own usage at /hub/my-usage (hub-ext/zai_myusage.py).
+      import zai_myusage
+      zai_myusage.configure(c)
 
     04-agents-route: |
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,

@@ -46,6 +46,13 @@ free GPUs, the history, and how to connect from outside. The nav bar shows the
 balance on every page and turns amber when it falls below
 `billing.low_balance`.
 
+**Customer: `/hub/my-usage`.** Each user's own usage for this month, last
+month, the last 30 days or all time: GPU and CPU hours, spend, credit added,
+a breakdown by size, every session, and CSV downloads of the sessions and of
+a statement of charges and credits. The nav shows it as **Usage** for
+everyone but admins, whose **Usage** is the all-users page; the Account page
+links to it. The code is `hub-ext/zai_myusage.py`; it only reads.
+
 **Asking for credit.** A user asks for more credit on `/hub/account`; an admin
 emails them payment details and approves the request on `/hub/billing` once
 the money arrives, which adds it as a top-up. See

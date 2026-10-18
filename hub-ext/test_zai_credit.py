@@ -46,8 +46,9 @@ def person(name, admin=False):
 
 class Case(unittest.TestCase):
     def setUp(self):
-        if os.path.exists(os.environ["ZAI_DB"]):
-            os.remove(os.environ["ZAI_DB"])
+        # The module's own path: another test file may have changed ZAI_DB since.
+        if os.path.exists(zai_platform.DB_PATH):
+            os.remove(zai_platform.DB_PATH)
         zai_platform.CATALOG = zai_platform.Catalog.load()
         zai_platform.init_db()
         self.config = Config()

@@ -1,0 +1,93 @@
+{% extends "page.html" %}
+{# Served by MyUsageHandler (hub-ext/zai_myusage.py) at /hub/my-usage: the
+   signed-in user's own usage for `period`. `sessions` is newest first, each
+   clipped to the period; `sizes` totals them by size; money is in micros. #}
+
+{% block title %}My usage · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-page">
+  <div class="z-page-head">
+    <div>
+      <div class="z-eyebrow">{{ user.name }}</div>
+      <h1>My usage</h1>
+      <p>The time your servers ran and what it cost. A server is charged from when it is ready until it stops, whether or not the GPU is busy.</p>
+    </div>
+    <div class="z-seg" role="tablist" aria-label="Period">
+      {% for key, label in periods.items() %}
+        <a href="{{ base_url }}my-usage?period={{ key }}" class="{% if key == period %}is-on{% endif %}" {% if key == period %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="z-stats">
+    <div class="z-stat"><div class="label">GPU hours</div><div class="value">{{ hours(totals.gpu_secs) }}<small>h</small></div></div>
+    <div class="z-stat"><div class="label">CPU-only hours</div><div class="value">{{ hours(totals.cpu_secs) }}<small>h</small></div></div>
+    {% if admin_free %}
+    <div class="z-stat"><div class="label">Spent</div><div class="value">Not charged</div></div>
+    {% else %}
+    <div class="z-stat"><div class="label">Spent</div><div class="value">{{ money(totals.cost) }}</div></div>
+    <div class="z-stat"><div class="label">Credit added</div><div class="value">{{ money(totals.credit) }}</div></div>
+    <div class="z-stat"><div class="label">Balance now</div><div class="value">{{ money(balance) }}</div></div>
+    {% endif %}
+  </div>
+
+  <section class="z-card">
+    <h2>By size, {{ periods[period] | lower }}</h2>
+    {% if sizes %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Size</th><th class="num">Sessions</th><th class="num">Hours</th>{% if not admin_free %}<th class="num">Cost</th>{% endif %}</tr></thead>
+        <tbody>
+          {% for z in sizes %}
+          <tr>
+            <td><strong>{{ z.size }}</strong>{% if z.gpu %} <span class="z-pill">GPU</span>{% endif %}</td>
+            <td class="num">{{ z.sessions }}</td>
+            <td class="num">{{ hours(z.secs) }}</td>
+            {% if not admin_free %}<td class="num">{{ money(z.cost) }}</td>{% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="z-empty">No servers ran in this period.</p>
+    {% endif %}
+  </section>
+
+  <section class="z-card">
+    <h2>Sessions</h2>
+    {% if sessions %}
+    <div class="z-table-wrap">
+      <table class="z-table">
+        <thead><tr><th>Size</th><th>Started (UTC)</th><th>Stopped (UTC)</th><th class="num">Duration</th>{% if not admin_free %}<th class="num">Price</th><th class="num">Cost</th>{% endif %}</tr></thead>
+        <tbody>
+          {% for s in sessions %}
+          <tr>
+            <td>{{ s.size }}{% if s.worker %} <span class="z-pill">Serverless</span>{% endif %}</td>
+            <td>{{ when(s.started) }}</td>
+            <td>{% if s.running %}<span class="z-pill is-ok">running</span>{% else %}{{ when(s.stopped) }}{% endif %}</td>
+            <td class="num">{{ dur(s.secs) }}</td>
+            {% if not admin_free %}
+            <td class="num">{{ rate_str(s.rate) if s.rate else 'Free' }}</td>
+            <td class="num">{{ money(s.cost) }}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if more %}<p class="z-empty" style="margin-top:.9rem">{{ more }} older sessions are in the download below.</p>{% endif %}
+    {% else %}
+      <p class="z-empty">No servers ran in this period.</p>
+    {% endif %}
+    <p class="z-empty" style="margin-top:.9rem">
+      Download: <a href="{{ base_url }}my-usage?period={{ period }}&amp;format=csv">sessions</a>
+      · <a href="{{ base_url }}my-usage?period={{ period }}&amp;format=statement">statement of charges and credits</a> (CSV).
+      A session that crosses the start of the period counts only its part inside it. Charges are posted to your balance when a server stops.
+    </p>
+  </section>
+
+  <p class="z-empty"><a href="{{ base_url }}account">Back to your account</a></p>
+</div>
+{% endblock main %}
