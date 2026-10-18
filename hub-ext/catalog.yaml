@@ -15,6 +15,9 @@ currency:
   symbol: "$"
   # Shown after every price ("$1.32/h incl. VAT"). Empty to show none.
   price_note: "incl. VAT"
+  # The VAT included in prices, in percent; the credit request form shows the
+  # VAT part of an amount with it. 0 or absent shows none.
+  vat_percent: 15.5
 
 billing:
   # false: charges are recorded and balances shown, but nobody is refused or

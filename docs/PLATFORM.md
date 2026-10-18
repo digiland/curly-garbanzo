@@ -46,6 +46,11 @@ free GPUs, the history, and how to connect from outside. The nav bar shows the
 balance on every page and turns amber when it falls below
 `billing.low_balance`.
 
+**Asking for credit.** A user asks for more credit on `/hub/account`; an admin
+emails them payment details and approves the request on `/hub/billing` once
+the money arrives, which adds it as a top-up. See
+[CREDIT-REQUESTS.md](CREDIT-REQUESTS.md).
+
 **Enforcement.** `billing.enforce` in the catalog has two states:
 
 | `enforce` | Behaviour |
@@ -221,7 +226,8 @@ GPU of that size), with a message saying which.
 
 ## Not yet done
 
-- **Online payments.** Credit is added by an admin or through
+- **Online payments.** Credit is added by an admin, on request
+  ([CREDIT-REQUESTS.md](CREDIT-REQUESTS.md)) or directly, or through
   `/api/zai/credits`; there is no checkout page yet.
 - **Bigger or extra volumes**, and charging for storage.
 - **Serverless endpoints** are built as an MVP; see

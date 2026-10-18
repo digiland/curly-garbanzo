@@ -14,7 +14,7 @@
 
 # Prices include Zimbabwe's 15.5% VAT, on the same basis as catalog.yaml:
 # $7.98 per whole H200 per hour before VAT, a MIG slice by its sevenths.
-currency: {code: USD, symbol: "$", price_note: "incl. VAT"}
+currency: {code: USD, symbol: "$", price_note: "incl. VAT", vat_percent: 15.5}
 
 billing:
   enforce: false

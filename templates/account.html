@@ -6,6 +6,7 @@
 {% block title %}Account · ZAI Notebooks{% endblock %}
 
 {% block main %}
+{% set zc = zai_credit if zai_credit is defined else None %}
 <div class="z-page">
   <div class="z-page-head">
     <div>
@@ -29,8 +30,61 @@
   <p class="z-alert is-warn" role="status">
     {% if acct.balance <= 0 %}Your balance is used up.{% if catalog.enforce %} Servers can't start until it's topped up, and a running one is stopped.{% endif %}
     {% else %}Your balance is low.{% endif %}
-    To add credit, contact an administrator with your username, <strong>{{ user.name }}</strong>.
+    {% if zc %}<a href="#credit">Request more credit</a>.{% else %}To add credit, contact an administrator with your username, <strong>{{ user.name }}</strong>.{% endif %}
   </p>
+  {% endif %}
+
+  {% if zc and not zc.free %}
+  {# The request form and its status, from hub-ext/zai_credit.py (`zai_credit`). #}
+  <section class="z-card" id="credit">
+    <h2>Request more credit</h2>
+    {% set r = zc.mine %}
+    {% if r and r.status == 'pending' %}
+    <p class="z-alert is-info" role="status">
+      Your request for <strong>{{ money(r.micros) }}</strong> by {{ zc.methods[r.method] or r.method }} is waiting, sent {{ when(r.created) }} UTC.
+      An administrator will email you payment details at {{ r.email or 'your sign-up address' }} and add the credit once your payment arrives.
+    </p>
+    <form method="post" action="{{ base_url }}credit/cancel" style="margin-top:.75rem">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <button type="submit" class="z-btn is-sm is-quiet">Cancel this request</button>
+    </form>
+    {% else %}
+    {% if r and r.status == 'approved' %}
+    <p class="z-alert is-ok" role="status">Your request #{{ r.id }} was approved on {{ when(r.decided) }} UTC: <strong>{{ money(r.granted) }}</strong> added.</p>
+    {% elif r and r.status == 'declined' %}
+    <p class="z-alert is-warn" role="status">Your request #{{ r.id }} for {{ money(r.micros) }} was declined on {{ when(r.decided) }} UTC: {{ r.reason }}</p>
+    {% endif %}
+    <p>Ask for credit here. An administrator will email you payment details, and adds the credit once your payment arrives.</p>
+    <form method="post" action="{{ base_url }}credit/request" class="z-topup" id="credit-form">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <div class="z-field" style="grid-column:1/-1">
+        <label for="c-amount">Amount ({{ catalog.currency }})</label>
+        <div style="display:flex;flex-wrap:wrap;gap:.5rem">
+          {% for p in zc.presets %}<button type="button" class="z-btn is-sm is-quiet" data-amount="{{ p }}">{{ zc.symbol }}{{ p }}</button>{% endfor %}
+          <input id="c-amount" name="amount" class="z-input" style="max-width:9rem" inputmode="decimal"
+                 pattern="[0-9]{1,4}(\.[0-9]{1,2})?" placeholder="25" required
+                 aria-describedby="c-guide">
+        </div>
+        <span class="hint" id="c-guide">Any amount from {{ zc.symbol }}{{ zc.min }} to {{ zc.symbol }}{{ "{:,}".format(zc.max) }}.</span>
+      </div>
+      <div class="z-field">
+        <label for="c-method">How you'll pay</label>
+        <select id="c-method" name="method" class="z-input" required>
+          {% for k, v in zc.methods.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="z-field">
+        <label for="c-reference">Payment reference (optional)</label>
+        <input id="c-reference" name="reference" class="z-input" maxlength="{{ zc.reference_max }}" placeholder="If you've already paid">
+      </div>
+      <div class="z-field" style="grid-column:1/-1">
+        <label for="c-note">Note (optional)</label>
+        <input id="c-note" name="note" class="z-input" maxlength="{{ zc.note_max }}" placeholder="Anything the administrator should know">
+      </div>
+      <div><button type="submit" class="z-btn is-block">Send request</button></div>
+    </form>
+    {% endif %}
+  </section>
   {% endif %}
 
   <section class="z-card">
@@ -106,3 +160,31 @@ ssh zai</div></div></li>
   </section>
 </div>
 {% endblock main %}
+
+{% block script %}
+{{ super() }}
+{% set zc = zai_credit if zai_credit is defined else None %}
+{% if zc and not zc.free and not (zc.mine and zc.mine.status == 'pending') %}
+<script>
+  (function () {
+    var form = document.getElementById("credit-form");
+    if (!form) return;
+    var input = document.getElementById("c-amount"), guide = document.getElementById("c-guide");
+    var plain = guide.textContent, symbol = {{ zc.symbol | tojson }}, vat = {{ zc.vat_percent | tojson }};
+    var sizes = {{ zc.sizes | tojson }}, min = {{ zc.min }}, max = {{ zc.max }};
+    function show() {
+      var a = parseFloat(input.value);
+      if (!(a >= min && a <= max)) { guide.textContent = plain; return; }
+      var parts = sizes.map(function (z) { return (a / z.rate).toFixed(1) + " hours on " + z.name; });
+      var text = symbol + a.toFixed(2) + " is about " + parts.join(", or ") + ".";
+      if (vat > 0) text += " Includes " + symbol + (a * vat / (100 + vat)).toFixed(2) + " VAT.";
+      guide.textContent = text;
+    }
+    form.querySelectorAll("[data-amount]").forEach(function (b) {
+      b.addEventListener("click", function () { input.value = b.dataset.amount; show(); input.focus(); });
+    });
+    input.addEventListener("input", show);
+  })();
+</script>
+{% endif %}
+{% endblock %}

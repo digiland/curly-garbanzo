@@ -54,6 +54,7 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `docs/SERVERLESS.md` | Serverless endpoints: how they work, using them, data handling; the research behind them |
 | `docs/CAIMEX.md` | Optional: a Caimex account for each user at first sign-in, and one-click Open Caimex |
 | `docs/ACCESS-REQUESTS.md` | The request-access form: what applicants are asked, the rules, and what admins see |
+| `docs/CREDIT-REQUESTS.md` | Users ask for more credit on their Account page; admins approve it on Billing once paid |
 
 ## Deploy
 

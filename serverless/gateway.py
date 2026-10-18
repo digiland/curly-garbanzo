@@ -474,7 +474,7 @@ class Gateway:
             raise web.HTTPError(429, reason=f"queue is full ({MAX_QUEUE} jobs)")
         acct = self.accounts.get(ep["owner"])
         if self.enforce and acct and not acct["free"] and acct["balance"] <= 0:
-            raise web.HTTPError(402, reason="Not enough credit. Ask an administrator to top up your account.")
+            raise web.HTTPError(402, reason="Not enough credit. Request more credit on your Account page.")
         now = time.time()
         job_id = str(uuid.uuid4())
         self.db.x("INSERT INTO jobs(id, endpoint, owner, status, input, created, ttl_at, exec_timeout, sync)"
