@@ -408,7 +408,8 @@
     <li class="nav-item"><a class="nav-link" href="{{base_url}}change-password">Change password</a></li>
     {% if user and user.admin %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}authorize">Approve users</a></li>
-        <li class="nav-item"><a class="nav-link" href="{{base_url}}billing">Billing</a></li>
+        {% set zcr = zai_credit if zai_credit is defined else None %}
+        <li class="nav-item"><a class="nav-link" href="{{base_url}}billing">Billing{% if zcr and zcr.pending_count %} <span class="z-nav-balance">({{ zcr.pending_count }})</span>{% endif %}</a></li>
         <li class="nav-item"><a class="nav-link" href="{{base_url}}usage">Usage</a></li>
     {% endif %}
 {% endblock %}

@@ -291,6 +291,10 @@ hub:
       # it offers the catalog's sizes.
       import zai_access
       zai_access.configure(c)
+      # Credit requests on /hub/account, decided on /hub/billing
+      # (hub-ext/zai_credit.py). After zai_platform: it uses its ledger.
+      import zai_credit
+      zai_credit.configure(c)
 
     04-agents-route: |
       # Cloud agents (agents/ in this repo): /agents/<user>/ goes to the agents router,

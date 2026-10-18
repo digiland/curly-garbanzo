@@ -20,6 +20,70 @@
   {% if message %}<p class="z-alert is-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
 
+  {% set zc = zai_credit if zai_credit is defined else None %}
+  {% if zc %}
+  {# Credit requests from users, hub-ext/zai_credit.py. #}
+  <section class="z-card" id="credit-requests">
+    <h2>Credit requests{% if zc.pending_count %} <span class="z-pill is-gold">{{ zc.pending_count }} waiting</span>{% endif %}</h2>
+    {% if zc.pending %}
+    <p>Email the user payment details. Approve once the money has arrived: the amount is added as a top-up.</p>
+    {% for r in zc.pending %}
+    <div class="z-card" style="margin-top:.75rem">
+      <p><strong>#{{ r.id }} · {{ r.username }}</strong> asks for <strong>{{ money(r.micros) }}</strong> by {{ zc.methods[r.method] or r.method }}, {{ when(r.created) }} UTC.<br>
+        Email: {% if r.email %}<a href="mailto:{{ r.email }}">{{ r.email }}</a>{% else %}none given{% endif %}
+        {% if r.reference %} · Their reference: {{ r.reference }}{% endif %}
+        {% if r.note %}<br>Note: {{ r.note }}{% endif %}</p>
+      <form method="post" action="{{ base_url }}credit/decide" class="z-topup">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="id" value="{{ r.id }}">
+        <input type="hidden" name="action" value="approve">
+        <div class="z-field">
+          <label for="ca-{{ r.id }}">Amount to add</label>
+          <input id="ca-{{ r.id }}" name="amount" class="z-input" inputmode="decimal" pattern="[0-9]+(\.[0-9]{1,6})?" value="{{ '%.2f' % (r.micros / 1000000) }}" required>
+        </div>
+        <div class="z-field">
+          <label for="cr-{{ r.id }}">Payment reference</label>
+          <input id="cr-{{ r.id }}" name="reference" class="z-input" maxlength="100" value="{{ r.reference }}" placeholder="EcoCash ref 4F2K…">
+        </div>
+        <div><button type="submit" class="z-btn is-block">Approve</button></div>
+      </form>
+      <form method="post" action="{{ base_url }}credit/decide" class="z-topup" style="margin-top:.75rem">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="id" value="{{ r.id }}">
+        <input type="hidden" name="action" value="decline">
+        <div class="z-field" style="grid-column:span 2">
+          <label for="cd-{{ r.id }}">Reason (the user sees it)</label>
+          <input id="cd-{{ r.id }}" name="reason" class="z-input" maxlength="300" required>
+        </div>
+        <div><button type="submit" class="z-btn is-block is-danger">Decline</button></div>
+      </form>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="z-empty">No requests waiting.</p>
+    {% endif %}
+    {% if zc.recent %}
+    <div class="z-table-wrap" style="margin-top:1rem">
+      <table class="z-table">
+        <thead><tr><th>#</th><th>Account</th><th>Asked</th><th>Outcome</th><th>By</th><th>When (UTC)</th></tr></thead>
+        <tbody>
+          {% for r in zc.recent %}
+          <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.username }}</td>
+            <td>{{ money(r.micros) }}</td>
+            <td>{% if r.status == 'approved' %}<span class="z-pill is-ok">approved</span> {{ money(r.granted) }}{% elif r.status == 'declined' %}<span class="z-pill is-bad">declined</span> {{ r.reason }}{% else %}<span class="z-pill">{{ r.status }}</span>{% endif %}</td>
+            <td>{{ r.decided_by }}</td>
+            <td>{{ when(r.decided) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <div class="z-stats">
     <div class="z-stat"><div class="label">Credit sold this month</div><div class="value">{{ money(month_topups) }}</div></div>
     <div class="z-stat"><div class="label">Usage charged this month</div><div class="value">{{ money(month_usage) }}</div></div>

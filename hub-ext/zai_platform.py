@@ -73,6 +73,7 @@ class Catalog:
         self.symbol = str(cur.get("symbol", "$"))
         # Said after every price, e.g. "incl. VAT"; empty says nothing.
         self.price_note = str(cur.get("price_note") or "").strip()
+        self.vat_percent = float(cur.get("vat_percent") or 0)
 
         b = data.get("billing") or {}
         self.enforce = bool(b.get("enforce", False))
@@ -437,7 +438,7 @@ class ZaiSpawner(KubeSpawner):
                         f"Not enough credit to start {size['name']}. Your balance is "
                         f"{CATALOG.money(bal)}; starting needs {CATALOG.money(need)} "
                         f"({CATALOG.min_minutes:g} minutes at {CATALOG.rate_str(rate)}). "
-                        "Ask an administrator to top up your account."))
+                        "Request more credit on your Account page."))
             if size["gpu"]:
                 res, cnt = size["gpu"]["pool"], size["gpu"]["count"]
                 cap = CATALOG.pools[res]
@@ -550,7 +551,7 @@ def options_form(spawner):
         low = bal <= CATALOG.low_balance
         head = (f'<p class="z-balance{" is-low" if low else ""}">Balance <strong>{CATALOG.money(bal)}</strong>'
                 f' · charged by the second while your server runs'
-                f'{" · <a href=account>top up</a>" if low else ""}</p>')
+                f'{" · <a href=account#credit>request credit</a>" if low else ""}</p>')
     return f"""
 <div class="z-spawn">
   {head}

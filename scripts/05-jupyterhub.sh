@@ -30,7 +30,7 @@ python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" hub-ext/catalog.
   || { echo "hub-ext/catalog.yaml is not valid YAML"; exit 1; }
 kubectl -n jupyterhub create configmap hub-zai \
   --from-file=hub-ext/zai_platform.py --from-file=hub-ext/zai_2fa.py \
-  --from-file=hub-ext/zai_caimex.py --from-file=hub-ext/zai_access.py \
+  --from-file=hub-ext/zai_caimex.py --from-file=hub-ext/zai_access.py --from-file=hub-ext/zai_credit.py \
   --from-file=hub-ext/catalog.yaml \
   ${ZAI_EXTRA_CATALOG:+--from-file=$ZAI_EXTRA_CATALOG} \
   --from-file=zai=cli/zai --dry-run=client -o yaml | kubectl apply -f -
@@ -99,7 +99,7 @@ helm repo update jupyterhub
 # The hub reads catalog.yaml and the module only at startup. Hashing them into
 # a pod annotation makes helm roll the hub exactly when they change. Running
 # servers are unaffected by a hub restart; the API is down for ~30 s.
-ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
+ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
 helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
   -f charts/jupyterhub-values.yaml ${EXTRA_VALUES:+-f $EXTRA_VALUES} \
