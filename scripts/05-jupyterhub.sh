@@ -32,6 +32,7 @@ kubectl -n jupyterhub create configmap hub-zai \
   --from-file=hub-ext/zai_platform.py --from-file=hub-ext/zai_2fa.py \
   --from-file=hub-ext/zai_caimex.py --from-file=hub-ext/zai_access.py \
   --from-file=hub-ext/zai_credit.py --from-file=hub-ext/zai_myusage.py \
+  --from-file=hub-ext/zai_payments.py \
   --from-file=hub-ext/catalog.yaml \
   ${ZAI_EXTRA_CATALOG:+--from-file=$ZAI_EXTRA_CATALOG} \
   --from-file=zai=cli/zai --dry-run=client -o yaml | kubectl apply -f -
@@ -81,6 +82,21 @@ elif kubectl -n jupyterhub get secret caimex-provision >/dev/null 2>&1; then
 else
     echo "note: CAIMEX_SERVICE_PASSWORD unset - users will not get Caimex accounts"
 fi
+# Optional online payment for credit (hub-ext/zai_payments.py, docs/PAYMENTS.md).
+# The payer comes back to, and the provider's webhook calls, https://PUBLIC_HOSTNAME.
+# The hub reads these only at start: restart it after changing them.
+if [ -n "${ECO_PAYMENTS_CLIENT_SECRET:-}" ]; then
+    kubectl -n jupyterhub create secret generic eco-payments \
+        --from-literal=url="${ECO_PAYMENTS_URL:-}" \
+        --from-literal=client-id="${ECO_PAYMENTS_CLIENT_ID:-}" \
+        --from-literal=client-secret="$ECO_PAYMENTS_CLIENT_SECRET" \
+        --from-literal=public-url="${PUBLIC_HOSTNAME:+https://$PUBLIC_HOSTNAME}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+elif kubectl -n jupyterhub get secret eco-payments >/dev/null 2>&1; then
+    echo "note: ECO_PAYMENTS_CLIENT_SECRET unset - keeping the existing eco-payments secret"
+else
+    echo "note: ECO_PAYMENTS_CLIENT_SECRET unset - online payment is off"
+fi
 # Optional S3-compatible object storage. Absent -> `spaces` reports it is not
 # configured and notebooks start normally.
 if [ -n "${S3_ENDPOINT:-}" ]; then
@@ -100,7 +116,7 @@ helm repo update jupyterhub
 # The hub reads catalog.yaml and the module only at startup. Hashing them into
 # a pod annotation makes helm roll the hub exactly when they change. Running
 # servers are unaffected by a hub restart; the API is down for ~30 s.
-ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/zai_myusage.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
+ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/zai_myusage.py hub-ext/zai_payments.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
 helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
   -f charts/jupyterhub-values.yaml ${EXTRA_VALUES:+-f $EXTRA_VALUES} \

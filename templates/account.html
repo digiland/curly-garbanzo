@@ -11,6 +11,7 @@
 {% block main %}
 {% set zc = zai_credit if zai_credit is defined else None %}
 {% set zm = zai_month if zai_month is defined else None %}
+{% set zp = zai_pay if zai_pay is defined else None %}
 {% set dz = catalog.default_size %}
 {% set live = acct.running[0] if acct.running else None %}
 <div class="z-page">
@@ -106,11 +107,30 @@
       <div>
         <h2 style="margin-bottom:.25rem">Request more credit</h2>
         {% set r = zc.mine %}
-        {% if not (r and r.status == 'pending') %}<p class="z-sub" style="margin:0">An administrator emails you payment details, and adds the credit once your payment arrives.</p>{% endif %}
+        {% if not (r and r.status == 'pending') %}<p class="z-sub" style="margin:0">{% if zc.online %}Pay now online and the credit is added as soon as the payment goes through, or ask and an administrator emails you payment details.{% else %}An administrator emails you payment details, and adds the credit once your payment arrives.{% endif %}</p>{% endif %}
       </div>
-      {% if r and r.status == 'pending' %}
+      {% set pay = zp.mine if zp and zp.mine and zp.mine.request_id == r.id else None %}
+      {% if r and r.status == 'pending' and r.method == 'online' %}
+      <p class="z-alert is-info" role="status" id="pay-status" data-check="{{ base_url }}credit/pay/check?format=json">
+        Your payment of <strong>{{ money(r.micros) }}</strong>{% if pay %} by {{ zp.labels[pay.method] or pay.method }}{% endif %} is waiting to be confirmed.
+        {% if pay and pay.next_action == 'USSD_PUSH' %}Approve the prompt on your phone.{% elif pay and pay.redirect %}If you didn't finish paying, continue on the payment page.{% endif %}
+        The credit is added as soon as the payment goes through.
+      </p>
+      <div class="z-actions">
+        {% if pay and pay.redirect %}<a class="z-btn" href="{{ pay.redirect }}" rel="noopener">Continue to the payment page</a>{% endif %}
+        <form method="post" action="{{ base_url }}credit/pay/check">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <button type="submit" class="z-btn is-quiet">Check payment</button>
+        </form>
+        <form method="post" action="{{ base_url }}credit/cancel">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <button type="submit" class="z-btn is-quiet">Cancel</button>
+        </form>
+      </div>
+      <p class="z-empty">Cancelling doesn't stop a payment you've already made on the payment page; if it goes through, the credit is still added.</p>
+      {% elif r and r.status == 'pending' %}
       <p class="z-alert is-info" role="status">
-        Your request for <strong>{{ money(r.micros) }}</strong> by {{ zc.methods[r.method] or r.method }} is waiting, sent {{ when(r.created) }} UTC.
+        Your request for <strong>{{ money(r.micros) }}</strong> by {{ zc.labels[r.method] or r.method }} is waiting, sent {{ when(r.created) }} UTC.
         An administrator will email you payment details at {{ r.email or 'your sign-up address' }} and add the credit once your payment arrives.
       </p>
       <form method="post" action="{{ base_url }}credit/cancel">
@@ -119,9 +139,11 @@
       </form>
       {% else %}
       {% if r and r.status == 'approved' %}
-      <p class="z-alert is-ok" role="status">Your request #{{ r.id }} was approved on {{ when(r.decided) }} UTC: <strong>{{ money(r.granted) }}</strong> added.</p>
+      <p class="z-alert is-ok" role="status">{% if r.method == 'online' %}Your payment went through on {{ when(r.decided) }} UTC{% else %}Your request #{{ r.id }} was approved on {{ when(r.decided) }} UTC{% endif %}: <strong>{{ money(r.granted) }}</strong> added.</p>
       {% elif r and r.status == 'declined' %}
-      <p class="z-alert is-warn" role="status">Your request #{{ r.id }} for {{ money(r.micros) }} was declined on {{ when(r.decided) }} UTC: {{ r.reason }}</p>
+      <p class="z-alert is-warn" role="status">{% if r.method == 'online' %}Your payment of {{ money(r.micros) }} didn't complete{% else %}Your request #{{ r.id }} for {{ money(r.micros) }} was declined{% endif %} on {{ when(r.decided) }} UTC: {{ r.reason }}</p>
+      {% elif r and r.status == 'cancelled' and r.decided_by == 'eco-payments' %}
+      <p class="z-alert is-warn" role="status">Your payment of {{ money(r.micros) }} wasn't completed: {{ r.reason }}</p>
       {% endif %}
       <form method="post" action="{{ base_url }}credit/request" class="z-topup" id="credit-form">
         <input type="hidden" name="_xsrf" value="{{ xsrf }}">
@@ -138,9 +160,25 @@
         <div class="z-field">
           <label for="c-method">How you'll pay</label>
           <select id="c-method" name="method" class="z-input" required>
+            {% if zc.online %}
+            <optgroup label="Pay now online">
+              {% for k, v in zc.online %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+            </optgroup>
+            <optgroup label="Ask an administrator">
+              {% for k, v in zc.methods.items() %}<option value="{{ k }}">{{ v }}, details by email</option>{% endfor %}
+            </optgroup>
+            {% else %}
             {% for k, v in zc.methods.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+            {% endif %}
           </select>
         </div>
+        {% if zc.online %}
+        <div class="z-field" id="c-mobile-field">
+          <label for="c-mobile">Mobile number</label>
+          <input id="c-mobile" name="mobile" class="z-input" inputmode="tel" autocomplete="tel" placeholder="+263 77 123 4567">
+          <span class="hint" id="c-mobile-hint">For EcoCash, the number the payment prompt goes to.</span>
+        </div>
+        {% endif %}
         <div class="z-field">
           <label for="c-reference">Payment reference (optional)</label>
           <input id="c-reference" name="reference" class="z-input" maxlength="{{ zc.reference_max }}" placeholder="If you've already paid">
@@ -149,7 +187,7 @@
           <label for="c-note">Note (optional)</label>
           <input id="c-note" name="note" class="z-input" maxlength="{{ zc.note_max }}" placeholder="Anything the administrator should know">
         </div>
-        <div style="grid-column:1/-1"><button type="submit" class="z-btn is-block">Send request</button></div>
+        <div style="grid-column:1/-1"><button type="submit" class="z-btn is-block" id="c-submit">{% if zc.online %}Pay now{% else %}Send request{% endif %}</button></div>
       </form>
       {% endif %}
     </section>
@@ -258,6 +296,45 @@ ssh zai</div></div></li>
       b.addEventListener("click", function () { input.value = b.dataset.amount; show(); });
     });
     input.addEventListener("input", show);
+
+    // Online methods: "Pay now", the mobile number (needed for EcoCash), and
+    // no reference or note, which only an administrator would read.
+    var method = document.getElementById("c-method"), submit = document.getElementById("c-submit");
+    var mobile = document.getElementById("c-mobile"), mobileField = document.getElementById("c-mobile-field");
+    var manual = [document.getElementById("c-reference"), document.getElementById("c-note")];
+    function sync() {
+      var online = method.value.indexOf("online:") === 0;
+      if (submit) submit.textContent = online ? "Pay now" : "Send request";
+      if (mobileField) mobileField.hidden = !online;
+      if (mobile) mobile.required = method.value === "online:ECOCASH";
+      manual.forEach(function (el) { if (el) el.closest(".z-field").hidden = online; });
+    }
+    method.addEventListener("change", sync);
+    sync();
+  })();
+</script>
+{% endif %}
+{% if zc and zc.mine and zc.mine.status == 'pending' and zc.mine.method == 'online' %}
+<script>
+  // A waiting online payment: ask every 10 seconds for two minutes, and reload
+  // when it is settled. The background check carries on after that.
+  (function () {
+    var box = document.getElementById("pay-status");
+    if (!box || !window.fetch) return;
+    var tries = 0, xsrf = {{ xsrf | tojson }};
+    function check() {
+      tries += 1;
+      fetch(box.dataset.check, { method: "POST", credentials: "same-origin",
+        headers: { "X-XSRFToken": xsrf, "Content-Type": "application/x-www-form-urlencoded" },
+        body: "_xsrf=" + encodeURIComponent(xsrf) })
+        .then(function (r) { return r.ok ? r.json() : {}; })
+        .then(function (d) {
+          if (["SUCCEEDED", "FAILED", "EXPIRED", "REFUNDED"].indexOf(d.status) >= 0) location.reload();
+          else if (tries < 12) setTimeout(check, 10000);
+        })
+        .catch(function () { if (tries < 12) setTimeout(check, 10000); });
+    }
+    setTimeout(check, 3000);
   })();
 </script>
 {% endif %}

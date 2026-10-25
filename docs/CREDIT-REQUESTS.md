@@ -3,7 +3,9 @@
 Users ask for more credit on their **Account** page. An administrator sends
 them payment details, and once the money has arrived approves the request on
 the **Billing** page, which adds the credit. Nothing is paid through the site:
-payment happens outside it, as before. The code is `hub-ext/zai_credit.py`,
+payment happens outside it, as before. When online payment is set up
+([PAYMENTS.md](PAYMENTS.md)), the same form also offers **Pay now**, which
+needs no administrator. The code is `hub-ext/zai_credit.py`,
 loaded by the hub after `zai_platform.py` (`03-zai-platform` in
 `charts/jupyterhub-values.yaml`).
 

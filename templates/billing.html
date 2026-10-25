@@ -21,6 +21,7 @@
   {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
 
   {% set zc = zai_credit if zai_credit is defined else None %}
+  {% set zp = zai_pay if zai_pay is defined else None %}
   {% if zc %}
   {# Credit requests from users, hub-ext/zai_credit.py. #}
   <section class="z-card" id="credit-requests">
@@ -29,10 +30,25 @@
     <p>Email the user payment details. Approve once the money has arrived: the amount is added as a top-up.</p>
     {% for r in zc.pending %}
     <div class="z-card" style="margin-top:.75rem">
-      <p><strong>#{{ r.id }} · {{ r.username }}</strong> asks for <strong>{{ money(r.micros) }}</strong> by {{ zc.methods[r.method] or r.method }}, {{ when(r.created) }} UTC.<br>
+      <p><strong>#{{ r.id }} · {{ r.username }}</strong> asks for <strong>{{ money(r.micros) }}</strong> by {{ zc.labels[r.method] or r.method }}{% if r.note and r.method == 'online' %} ({{ r.note }}){% endif %}, {{ when(r.created) }} UTC.<br>
         Email: {% if r.email %}<a href="mailto:{{ r.email }}">{{ r.email }}</a>{% else %}none given{% endif %}
         {% if r.reference %} · Their reference: {{ r.reference }}{% endif %}
-        {% if r.note %}<br>Note: {{ r.note }}{% endif %}</p>
+        {% if r.note and r.method != 'online' %}<br>Note: {{ r.note }}{% endif %}</p>
+      {% if r.method == 'online' %}
+      {# Settled by hub-ext/zai_payments.py from the provider's answer, never by hand. #}
+      {% set pay = zp.open.get(r.id) if zp else None %}
+      <div class="z-actions" style="align-items:center">
+        <span class="z-pill is-gold">{{ pay.status if pay else "waiting" }}</span>
+        <span class="z-empty">Paid online: the credit is added automatically when the payment goes through.{% if pay %} Payment {{ pay.payment_id }}.{% endif %}</span>
+        {% if pay %}
+        <form method="post" action="{{ base_url }}credit/pay/check">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <input type="hidden" name="payment" value="{{ pay.payment_id }}">
+          <button type="submit" class="z-btn is-sm is-quiet">Check payment</button>
+        </form>
+        {% endif %}
+      </div>
+      {% else %}
       <form method="post" action="{{ base_url }}credit/decide" class="z-topup">
         <input type="hidden" name="_xsrf" value="{{ xsrf }}">
         <input type="hidden" name="id" value="{{ r.id }}">
@@ -57,6 +73,7 @@
         </div>
         <div><button type="submit" class="z-btn is-block is-danger">Decline</button></div>
       </form>
+      {% endif %}
     </div>
     {% endfor %}
     {% else %}

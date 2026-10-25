@@ -126,6 +126,21 @@ hub:
     # once. Empty turns the allowance off. Only matters when the five
     # settings above are present.
     CAIMEX_FREE_ALLOWANCE_USD: "5"
+    # Optional: pay for credit online through Econet's Eco Payments API
+    # (Sasai, card, EcoCash; hub-ext/zai_payments.py, docs/PAYMENTS.md). Off
+    # unless the client id and secret are set.
+    ECO_PAYMENTS_URL:
+      valueFrom:
+        secretKeyRef: {name: eco-payments, key: url, optional: true}
+    ECO_PAYMENTS_CLIENT_ID:
+      valueFrom:
+        secretKeyRef: {name: eco-payments, key: client-id, optional: true}
+    ECO_PAYMENTS_CLIENT_SECRET:
+      valueFrom:
+        secretKeyRef: {name: eco-payments, key: client-secret, optional: true}
+    ECO_PAYMENTS_PUBLIC_URL:
+      valueFrom:
+        secretKeyRef: {name: eco-payments, key: public-url, optional: true}
   config:
     JupyterHub:
       authenticator_class: nativeauthenticator.NativeAuthenticator
@@ -295,6 +310,10 @@ hub:
       # (hub-ext/zai_credit.py). After zai_platform: it uses its ledger.
       import zai_credit
       zai_credit.configure(c)
+      # Online payment for credit (hub-ext/zai_payments.py). After zai_credit:
+      # it adds "Pay now" to its form. Off without ECO_PAYMENTS_ credentials.
+      import zai_payments
+      zai_payments.configure(c)
       # Each user's own usage at /hub/my-usage (hub-ext/zai_myusage.py).
       import zai_myusage
       zai_myusage.configure(c)

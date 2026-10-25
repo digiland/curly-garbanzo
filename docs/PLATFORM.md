@@ -233,9 +233,9 @@ GPU of that size), with a message saying which.
 
 ## Not yet done
 
-- **Online payments.** Credit is added by an admin, on request
-  ([CREDIT-REQUESTS.md](CREDIT-REQUESTS.md)) or directly, or through
-  `/api/zai/credits`; there is no checkout page yet.
+- **Online refunds.** Credit can be paid for online
+  ([PAYMENTS.md](PAYMENTS.md)), but refunds are a manual adjustment: the
+  payments API does not refund Sasai-backed payments yet.
 - **Bigger or extra volumes**, and charging for storage.
 - **Serverless endpoints** are built as an MVP; see
   [SERVERLESS.md](SERVERLESS.md). Workers are `kind='worker'` sessions in the
