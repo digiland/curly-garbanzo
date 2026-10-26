@@ -21,7 +21,7 @@ On **Account**, under **Request more credit**, they choose:
 | Note | Optional, up to 500 characters |
 
 Under the amount the form shows what it buys at today's prices, for example
-"$25.00 is about 18.9 hours on GPU · 18 GB, or 13.4 hours on GPU · 18 GB, high
+"$25.00 is about 15.8 hours on GPU · 18 GB, or 11.3 hours on GPU · 18 GB, high
 memory. Includes $3.35 VAT." The VAT rate is `currency.vat_percent` in the
 catalog.
 
