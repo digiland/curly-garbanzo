@@ -15,7 +15,7 @@ the hub-zai ConfigMap (hub-ext/ in the repo). Everything is in one SQLite file
 on the hub PVC, next to jupyterhub.sqlite, so it survives upgrades.
 
 Money is stored as integer *micros* (millionths of the currency unit). A
-$1.32/h slice costs ~367 micros a second; with cents, short sessions would
+$1.58/h slice costs ~439 micros a second; with cents, short sessions would
 round to nothing.
 """
 

@@ -80,6 +80,10 @@ its GPU, running unbilled while the hub showed it as gone.
    existing accounts included.
 3. Set `enforce: true` and run `scripts/05-jupyterhub.sh`.
 
+The shipped catalogs have `enforce: true` (since October 2026). Before
+deploying them, bring every negative balance on `/hub/billing` back to zero
+with an Adjustment: a user at or below zero cannot start a server.
+
 Admins' own servers are free while `admins_free: true`.
 
 **API for a payment provider.** `POST /hub/api/zai/credits` with an admin

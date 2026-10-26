@@ -77,7 +77,7 @@ class StartPicker(Case):
 
     def test_cards_show_price_hardware_and_the_recommended_size(self):
         html = self.form()
-        self.assertIn("<b>$1.32</b><span>/ hour incl. VAT</span>", html)
+        self.assertIn("<b>$1.58</b><span>/ hour incl. VAT</span>", html)
         self.assertIn("<b>$0.06</b><span>/ hour incl. VAT</span>", html)
         self.assertIn("RAM<b>12 GB</b>", html)
         self.assertIn("RAM<b>24 GB</b>", html)
@@ -107,7 +107,7 @@ class StartPicker(Case):
         html = self.form()
         self.assertIn('data-balance="20000000"', html)
         self.assertIn('data-money="$20.00"', html)
-        self.assertIn('data-rate="1320000"', html)
+        self.assertIn('data-rate="1580000"', html)
         self.assertIn("z-summary", open(os.path.join(REPO, "templates", "spawn.html")).read())
 
     def test_free_admin_sees_free(self):
@@ -131,7 +131,7 @@ class AccountOverview(Case):
         self.credit(20 * MICROS)
         page = self.account()
         self.assertIn("$20.00", page)
-        self.assertIn("About <strong>15 hours</strong> on GPU · 18 GB", page)
+        self.assertIn("About <strong>13 hours</strong> on GPU · 18 GB", page)       # $20 at $1.58
 
     def test_running_server_card(self):
         with zai_platform._db() as con:
@@ -179,8 +179,8 @@ class Home(Case):
         self.credit(20 * MICROS)
         page = self.page()
         self.assertIn('href="/hub/spawn#gpu-18"', page)
-        self.assertIn("<b>$1.32</b><span>/ hour incl. VAT</span>", page)
-        self.assertIn("covers about <strong>15 hours</strong>", page)
+        self.assertIn("<b>$1.58</b><span>/ hour incl. VAT</span>", page)
+        self.assertIn("covers about <strong>13 hours</strong>", page)
         self.assertIn('id="start"', page)
         self.assertNotIn('id="stop"', page)
 

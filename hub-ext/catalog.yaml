@@ -4,16 +4,17 @@
 # Prices are per hour of a server *running*, charged to the second. Money is
 # kept internally in millionths of the currency, so sub-cent rates are exact.
 #
-# Pricing basis: one whole H200 for an hour is $7.98 before VAT, $9.22 with
-# Zimbabwe's 15.5% VAT. A MIG slice is sold by its share of the GPU, in
-# sevenths: 1g (18 GB) is 1/7 = $1.14 before VAT, $1.32 with it. Every price
-# below INCLUDES VAT: it is what comes off the customer's balance. The VAT in
-# an amount is amount x 15.5 / 115.5.
+# Pricing basis: ZAI's tiered price sheet (October 2026), on-demand rows.
+# A whole H200 for an hour is $7.98 before VAT, $9.22 with Zimbabwe's 15.5% VAT.
+# A vGPU slice (1g, 18 GB) is $1.37 before VAT, $1.58 with it: priced on its
+# own, above a seventh of the whole GPU. Larger slices are that many slice
+# prices. Every price below INCLUDES VAT: it is what comes off the customer's
+# balance. The VAT in an amount is amount x 15.5 / 115.5.
 
 currency:
   code: USD
   symbol: "$"
-  # Shown after every price ("$1.32/h incl. VAT"). Empty to show none.
+  # Shown after every price ("$1.58/h incl. VAT"). Empty to show none.
   price_note: "incl. VAT"
   # The VAT included in prices, in percent; the credit request form shows the
   # VAT part of an amount with it. 0 or absent shows none.
@@ -25,7 +26,7 @@ billing:
   #        then top everyone up and set true.
   # true:  a server cannot start without credit for min_minutes_to_start, and a
   #        running one is stopped when its owner's balance reaches zero.
-  enforce: false
+  enforce: true
   min_minutes_to_start: 10
   # Admins' own servers are not charged.
   admins_free: true
@@ -60,7 +61,7 @@ sizes:
     cpu_guarantee: 0.5
     memory: 12G
     memory_guarantee: 1G
-    price_per_hour: 1.32         # 1/7 of $9.22
+    price_per_hour: 1.58         # $1.37 before VAT, the price sheet's vGPU slice
     default: true
 
   - slug: gpu-18-highmem
@@ -71,7 +72,7 @@ sizes:
     cpu_guarantee: 1
     memory: 24G
     memory_guarantee: 2G
-    price_per_hour: 1.86         # the 18 GB slice x 0.69/0.49, the old ratio
+    price_per_hour: 2.22         # the 18 GB slice x 0.69/0.49, the old ratio ($1.92 before VAT)
 
   - slug: cpu
     name: "CPU only"
@@ -88,15 +89,15 @@ sizes:
   # - slug: gpu-18
   #   name: "GPU · 18 GB"
   #   gpu: {resource: nvidia.com/mig-1g.18gb, count: 1, vram_gb: 18}
-  #   cpu: 2, memory: 12G ...                    price_per_hour: 1.32
+  #   cpu: 2, memory: 12G ...                    price_per_hour: 1.58
   # - slug: gpu-35
   #   name: "GPU · 35 GB"
   #   gpu: {resource: nvidia.com/mig-2g.35gb, count: 1, vram_gb: 35}
-  #   cpu: 4, memory: 24G ...                    price_per_hour: 2.63
+  #   cpu: 4, memory: 24G ...                    price_per_hour: 3.16
   # - slug: gpu-71
   #   name: "GPU · 71 GB"
   #   gpu: {resource: nvidia.com/mig-3g.71gb, count: 1, vram_gb: 71}
-  #   cpu: 8, memory: 48G ...                    price_per_hour: 3.95
+  #   cpu: 8, memory: 48G ...                    price_per_hour: 4.74
   #
   # With the whole layout (scripts/11-gpu-layout.sh whole), one size:
   #
