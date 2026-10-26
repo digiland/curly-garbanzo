@@ -45,6 +45,9 @@ import urllib.parse
 import urllib.request
 
 CONFIG = os.path.join(os.path.expanduser("~"), ".config", "zai", "config.json")
+# Cloudflare's Browser Integrity Check refuses urllib's default "Python-urllib/x.y"
+# with error 1010, so every request names itself.
+USER_AGENT = f"zai-cli (Python {sys.version_info[0]}.{sys.version_info[1]}; {sys.platform})"
 
 
 class ZaiError(Exception):
@@ -108,6 +111,7 @@ def api(cfg, method, path, body=None):
         "Authorization": "token " + cfg["token"],
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "User-Agent": USER_AGENT,
     })
     try:
         with _OPENER.open(req, timeout=60) as r:
@@ -133,7 +137,8 @@ def gateway(cfg, method, path, body=None, timeout=120):
     url = _secure(os.environ.get("ZAI_GATEWAY", cfg["host"] + "/v2").rstrip("/") + path)
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json"})
+        "Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json",
+        "User-Agent": USER_AGENT})
     try:
         with _OPENER.open(req, timeout=timeout) as r:
             raw = r.read()
@@ -369,7 +374,7 @@ class WebSocket:
         key = base64.b64encode(os.urandom(16)).decode()
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         lines = [f"GET {path} HTTP/1.1", f"Host: {u.netloc}", "Upgrade: websocket", "Connection: Upgrade",
-                 f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13"]
+                 f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", f"User-Agent: {USER_AGENT}"]
         lines += [f"{k}: {v}" for k, v in headers.items()]
         sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         buf = b""
