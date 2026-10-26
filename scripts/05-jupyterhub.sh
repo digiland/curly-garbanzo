@@ -19,9 +19,11 @@ chmod 2775 /srv/jupyter-shared/team   # setgid: files stay group-writable
 
 echo "==> branding templates"
 # A ConfigMap rather than a rebuild of the hub image, so copy and CSS changes
-# are a helm upgrade instead of a docker build + ctr import.
+# are a helm upgrade instead of a docker build + ctr import. Server-side apply:
+# client-side apply keeps a copy in an annotation capped at 256 KB, which the
+# templates outgrew.
 kubectl -n jupyterhub create configmap hub-custom-templates \
-  --from-file=templates/ --dry-run=client -o yaml | kubectl apply -f -
+  --from-file=templates/ --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
 
 echo "==> platform layer (billing, sizes, templates, API) and the zai CLI"
 # Checked before it reaches the hub: a catalog the module cannot load would
@@ -35,7 +37,7 @@ kubectl -n jupyterhub create configmap hub-zai \
   --from-file=hub-ext/zai_payments.py \
   --from-file=hub-ext/catalog.yaml \
   ${ZAI_EXTRA_CATALOG:+--from-file=$ZAI_EXTRA_CATALOG} \
-  --from-file=zai=cli/zai --dry-run=client -o yaml | kubectl apply -f -
+  --from-file=zai=cli/zai --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
 
 echo "==> secrets"
 if [ -n "${CAIMEX_API_KEY:-}" ]; then
