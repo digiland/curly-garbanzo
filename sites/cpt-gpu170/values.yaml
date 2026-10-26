@@ -1,0 +1,940 @@
+# Site overlay for cpt-gpu170. Apply AFTER the base file, never instead of it:
+#
+#   helm upgrade -i jupyterhub jupyterhub/jupyterhub -n jupyterhub \
+#     -f charts/jupyterhub-values.yaml \
+#     -f sites/cpt-gpu170/values.yaml
+#
+# (sites/cpt-gpu170/deploy.sh does exactly this.)
+#
+# The base file assumes a k3s VM with one H200 split 7 x 1g.18gb and advertised
+# as plain nvidia.com/gpu. This box is different in the three ways that matter:
+#
+#   GPUs     8 x H200, MIG managed by the GPU Operator (config h200-35gb-mixed,
+#            strategy MIXED): 16 x nvidia.com/mig-1g.35gb on GPUs 0-3 and
+#            12 x nvidia.com/mig-2g.35gb on GPUs 4-7. nvidia.com/gpu is 0, so a
+#            profile asking for it stays Pending forever.
+#   Storage  no local-path. wekafs-dir (WEKA CSI, capacityEnforcement: HARD)
+#            gives RWX volumes with REAL size limits -- it replaces both the
+#            hostPath shared folders and scripts/07-08's XFS quota machinery.
+#   Runtime  containerd's default is runc; only the `nvidia` RuntimeClass injects
+#            GPUs. See extraPodConfig below.
+#
+# Helm merges maps key-by-key and REPLACES lists wholesale, which is why the
+# profile list and the volume lists are restated in full here.
+
+hub:
+  # Merged with the base file's extraEnv map (maps merge; lists would not).
+  extraEnv:
+    METER_URL: http://zai-meter:8000
+    METER_TOKEN:
+      valueFrom:
+        secretKeyRef: {name: zai-meter, key: token}
+    # Optional (see 06-caimex-accounts below). Without all five, nothing is
+    # done on the Caimex side.
+    CAIMEX_API_URL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: api-url, optional: true}
+    CAIMEX_WEB_URL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: web-url, optional: true}
+    CAIMEX_ORG_ID:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: org-id, optional: true}
+    CAIMEX_SERVICE_EMAIL:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: email, optional: true}
+    CAIMEX_SERVICE_PASSWORD:
+      valueFrom:
+        secretKeyRef: {name: caimex-provision, key: password, optional: true}
+  config:
+    JupyterHub:
+      # Admins can stop, start and approve users, but NOT open a user's running
+      # server. With this true, one admin session (or one stolen admin cookie)
+      # is a shell in every user's environment and home directory.
+      admin_access: false
+      # Sessions end after a day instead of the default fourteen, so a cookie
+      # lifted from a shared machine stops working by tomorrow.
+      cookie_max_age_days: 1
+      # Browsers only ever reach the hub over HTTPS (Cloudflare terminates TLS),
+      # but the hub sees plain HTTP on its last hop and would otherwise issue
+      # cookies without the Secure flag. cookie_options is a tornado setting,
+      # not a JupyterHub trait: at the top level it is ignored with a warning.
+      tornado_settings:
+        cookie_options: {secure: true}
+        xsrf_cookie_kwargs: {secure: true}
+      # /hub/ shows the control panel even while the user's server runs.
+      # The default bounces straight back into JupyterLab, leaving no way to
+      # reach Home, Token or (for admins) Admin and Authorize without typing
+      # /hub/home.
+      redirect_to_server: false
+    NativeAuthenticator:
+      # Offers TOTP (authenticator app) at signup. NativeAuthenticator cannot
+      # force it, so it is opt-in per user -- tell admins to turn it on.
+      allow_2fa: true
+    KubeSpawner:
+      # Defence in depth on top of the chart's defaults (non-root uid 1000, no
+      # privilege escalation, no service-account token): no Linux capabilities
+      # and the runtime's default syscall filter. Merged into the container
+      # securityContext KubeSpawner already builds, not a replacement for it.
+      container_security_context:
+        capabilities: {drop: [ALL]}
+        seccompProfile: {type: RuntimeDefault}
+  extraConfig:
+    # Spawn-page capacity for the MIG pools, and a clear refusal when one is
+    # full. Without this, a user who picks a full pool sits on a spinner until
+    # startTimeout (10 minutes) and then gets a generic failure.
+    #
+    # Totals come from node allocatable (needs sites/cpt-gpu170/hub-rbac.yaml);
+    # usage counts pods in THIS namespace only. Slices taken by workloads in
+    # other namespaces are not seen, so the scheduler stays the final word --
+    # this is a guide for people, not an admission controller. Any failure to
+    # read the API falls back to the plain profile list.
+    03-gpu-capacity: |
+      import copy
+
+      _STATIC_PROFILES = c.KubeSpawner.profile_list
+
+      def _mig_resource(profile):
+          limits = (profile.get("kubespawner_override") or {}).get("extra_resource_limits") or {}
+          return next((k for k in limits if k.startswith("nvidia.com/mig-")), None)
+
+      async def _mig_capacity(spawner):
+          total, used = {}, {}
+          for node in (await spawner.api.list_node()).items:
+              for k, v in (node.status.allocatable or {}).items():
+                  if k.startswith("nvidia.com/mig-"):
+                      total[k] = total.get(k, 0) + int(v)
+          pods = await spawner.api.list_namespaced_pod(spawner.namespace)
+          for pod in pods.items:
+              if pod.status.phase not in ("Pending", "Running"):
+                  continue
+              for ctr in pod.spec.containers:
+                  limits = (ctr.resources and ctr.resources.limits) or {}
+                  for k, v in limits.items():
+                      if k.startswith("nvidia.com/mig-"):
+                          used[k] = used.get(k, 0) + int(v)
+          return {k: (max(total[k] - used.get(k, 0), 0), total[k]) for k in total}
+
+      async def _profile_list(spawner):
+          try:
+              cap = await _mig_capacity(spawner)
+          except Exception as e:
+              spawner.log.warning("MIG capacity lookup failed, showing plain profiles: %s", e)
+              return _STATIC_PROFILES
+          profiles = copy.deepcopy(_STATIC_PROFILES)
+          for p in profiles:
+              res = _mig_resource(p)
+              if res in cap:
+                  free, total = cap[res]
+                  # Safe to edit: every profile has an explicit slug, so the
+                  # changing name does not change which profile is selected.
+                  p["display_name"] += f" — {free} of {total} free"
+                  if free == 0:
+                      p["description"] = ("FULL right now. Pick another option, or try "
+                                          "again when someone stops their server. "
+                                          + p["description"])
+          return profiles
+
+      async def _refuse_full_pool(spawner):
+          slug = (spawner.user_options or {}).get("profile")
+          profile = next((p for p in _STATIC_PROFILES if p.get("slug") == slug), None)
+          res = _mig_resource(profile) if profile else None
+          if not res:
+              return
+          try:
+              cap = await _mig_capacity(spawner)
+          except Exception:
+              return          # cannot tell; let the scheduler decide
+          free, total = cap.get(res, (1, 0))
+          if free == 0:
+              raise RuntimeError(
+                  f"All {total} '{profile['display_name']}' GPU slices are in use. "
+                  "Choose another option, or try again later.")
+
+      c.KubeSpawner.profile_list = _profile_list
+      c.KubeSpawner.pre_spawn_hook = _refuse_full_pool
+
+    # Usage pages and GPU budgets. The numbers live in zai-meter
+    # (sites/cpt-gpu170/meter/meter.py, the only writer); everything here is a
+    # view over its API plus one check before a GPU server starts.
+    #
+    #   /hub/usage              a user's own month; admins get every user,
+    #                           meter health, budgets and adjustments
+    #   /hub/usage?user=NAME    admins: one user's detail
+    #   /hub/usage/me.json      the control panel's "GPU hours this month" card
+    #   /hub/usage/export.csv   admins: statement lines for billing
+    #
+    # Registered through the authenticator's get_handlers (as NativeAuthenticator
+    # registers /authorize), not the deprecated JupyterHub.extra_handlers.
+    04-usage: |
+      import json, os, re, urllib.parse
+      from tornado import web
+      from tornado.httpclient import AsyncHTTPClient, HTTPRequest
+      from jupyterhub import orm
+      from jupyterhub.handlers import BaseHandler
+      from nativeauthenticator import NativeAuthenticator
+
+      _METER_URL = os.environ.get("METER_URL", "http://zai-meter:8000")
+      _METER_TOKEN = os.environ.get("METER_TOKEN", "")
+      # If the meter is down, GPU spawns go ahead (and are backfilled once it is
+      # back, see meter.py) rather than locking everyone out of the GPUs.
+      _BUDGET_FAIL_OPEN = os.environ.get("METER_FAIL_OPEN", "true").lower() == "true"
+      _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+      _USER_RE = re.compile(r"^(\*|[a-z][a-z0-9-]{2,30})$")
+
+      async def _meter(path, body=None, raw=False, timeout=10):
+          req = HTTPRequest(
+              _METER_URL + path, method="POST" if body is not None else "GET",
+              headers={"Authorization": f"Bearer {_METER_TOKEN}",
+                       "Content-Type": "application/json"},
+              body=json.dumps(body) if body is not None else None,
+              connect_timeout=5, request_timeout=timeout)
+          resp = await AsyncHTTPClient().fetch(req, raise_error=False)
+          if resp.code == 599 or resp.body is None:
+              raise RuntimeError(f"usage meter unreachable ({resp.error})")
+          if resp.code >= 400:
+              try:
+                  msg = json.loads(resp.body)["error"]
+              except Exception:
+                  msg = f"usage meter returned HTTP {resp.code}"
+              raise RuntimeError(msg)
+          return resp.body if raw else json.loads(resp.body)
+
+      class _UsageBase(BaseHandler):
+          def _month(self, name="month", body=False):
+              get = self.get_body_argument if body else self.get_argument
+              m = get(name, "")
+              return m if _MONTH_RE.match(m) else ""
+
+          def _require_admin(self):
+              if not self.current_user.admin:
+                  raise web.HTTPError(403)
+
+          def _back(self, msg):
+              """Redirect target after a form post. Built from validated
+              fields only, so it can never point off-site."""
+              q = {"msg": msg[:300]}
+              m, u = self._month("back_month", body=True), self.get_body_argument("back_user", "")
+              if m:
+                  q["month"] = m
+              if u and u != "*" and _USER_RE.match(u):
+                  q["user"] = u
+              return f"{self.hub.base_url}usage?{urllib.parse.urlencode(q)}"
+
+      class UsagePage(_UsageBase):
+          @web.authenticated
+          async def get(self):
+              me = self.current_user
+              month, target = self._month(), self.get_argument("user", "")
+              if target and (target == "*" or not _USER_RE.match(target)):
+                  raise web.HTTPError(400)
+              if target and target != me.name:
+                  self._require_admin()
+              view = "overview" if (me.admin and not target) else "detail"
+              name = target or me.name
+              q = f"?month={month}" if month else ""
+              data, error = None, None
+              try:
+                  path = "/api/usage" if view == "overview" else f"/api/usage/{name}"
+                  data = await _meter(path + q)
+              except Exception as e:
+                  self.log.error("usage page: %s", e)
+                  error = str(e)
+              users = ([u.name for u in self.db.query(orm.User).order_by(orm.User.name)]
+                       if me.admin else [])
+              html = await self.render_template(
+                  "usage.html", view=view, data=data, error=error, target=name,
+                  flash=self.get_argument("msg", ""), all_users=users)
+              self.finish(html)
+
+      class UsageMe(_UsageBase):
+          @web.authenticated
+          async def get(self):
+              try:
+                  d = await _meter(f"/api/check/{self.current_user.name}", timeout=5)
+              except Exception:
+                  d = {"error": "unavailable"}
+              self.set_header("Content-Type", "application/json")
+              self.set_header("Cache-Control", "no-store")
+              self.finish(json.dumps(d))
+
+      class UsageExport(_UsageBase):
+          @web.authenticated
+          async def get(self):
+              self._require_admin()
+              month = self._month()
+              body = await _meter("/api/export.csv" + (f"?month={month}" if month else ""), raw=True)
+              self.set_header("Content-Type", "text/csv; charset=utf-8")
+              self.set_header("Content-Disposition",
+                              f'attachment; filename="zai-usage-{month or "this-month"}.csv"')
+              self.set_header("Cache-Control", "no-store")
+              self.finish(body)
+
+      class UsageBudget(_UsageBase):
+          @web.authenticated
+          async def post(self):
+              self._require_admin()
+              user = self.get_body_argument("user", "").strip()
+              hours = self.get_body_argument("gpu_hours", "").strip()
+              try:
+                  await _meter("/api/budget", {
+                      "user": user, "gpu_hours": float(hours) if hours else None,
+                      "by": self.current_user.name,
+                      "note": self.get_body_argument("note", "")})
+                  who = "everyone (default)" if user == "*" else user
+                  msg = f"Budget for {who} set to {hours + ' GPU hours' if hours else 'unlimited'}."
+              except Exception as e:
+                  msg = f"Budget not saved: {e}"
+              self.redirect(self._back(msg))
+
+      class UsageAdjust(_UsageBase):
+          @web.authenticated
+          async def post(self):
+              self._require_admin()
+              try:
+                  await _meter("/api/adjustments", {
+                      "user": self.get_body_argument("user", "").strip(),
+                      "month": self._month(body=True),
+                      "resource": self.get_body_argument("resource", ""),
+                      "hours": float(self.get_body_argument("hours", "0") or 0),
+                      "reason": self.get_body_argument("reason", ""),
+                      "by": self.current_user.name})
+                  msg = "Adjustment recorded."
+              except Exception as e:
+                  msg = f"Adjustment not saved: {e}"
+              self.redirect(self._back(msg))
+
+      _usage_handlers = [
+          (r"/usage", UsagePage),
+          (r"/usage/me\.json", UsageMe),
+          (r"/usage/export\.csv", UsageExport),
+          (r"/usage/budget", UsageBudget),
+          (r"/usage/adjust", UsageAdjust),
+      ]
+      _na_get_handlers = NativeAuthenticator.get_handlers
+
+      def _get_handlers(self, app):
+          return list(_na_get_handlers(self, app)) + _usage_handlers
+
+      NativeAuthenticator.get_handlers = _get_handlers
+
+      # Budget check, after the full-pool check in 03-gpu-capacity. CPU-only
+      # servers are never refused: running out of GPU hours must not lock a
+      # user out of their files.
+      async def _check_gpu_budget(spawner):
+          slug = (spawner.user_options or {}).get("profile")
+          prof = next((p for p in _STATIC_PROFILES if p.get("slug") == slug), None)
+          if not prof or not _mig_resource(prof):
+              return
+          try:
+              d = await _meter(f"/api/check/{spawner.user.name}", timeout=5)
+          except Exception as e:
+              if _BUDGET_FAIL_OPEN:
+                  spawner.log.warning("GPU budget check unavailable, allowing %s: %s",
+                                      spawner.user.name, e)
+                  return
+              raise RuntimeError(
+                  "GPU budgets can't be checked right now, so GPU servers can't start. "
+                  "CPU only still works; try again in a few minutes.")
+          if not d.get("allowed", True):
+              raise RuntimeError(
+                  f"You've used {d['gpu_hours_used']:.1f} of your {d['budget']:g} GPU hours "
+                  f"for {d['month']}. CPU only is still available; ask an administrator "
+                  "if you need more GPU time.")
+
+      _pre_spawn_before_budget = (c.KubeSpawner["pre_spawn_hook"]
+                                  if "pre_spawn_hook" in c.KubeSpawner else None)
+
+      async def _pre_spawn_with_budget(spawner):
+          if _pre_spawn_before_budget:
+              await _pre_spawn_before_budget(spawner)
+          await _check_gpu_budget(spawner)
+
+      c.KubeSpawner.pre_spawn_hook = _pre_spawn_with_budget
+
+    # Post-signup two-factor (TOTP). NativeAuthenticator only offers 2FA as a
+    # checkbox at signup and has no way to add it later, so this adds /hub/2fa:
+    # a signed-in user scans a QR with Microsoft Authenticator (or any TOTP
+    # app), confirms a 6-digit code, and 2FA is on for subsequent logins. It
+    # writes the same UserInfo.has_2fa / UserInfo.otp_secret columns the
+    # authenticator already checks in authenticate() and is_valid_token().
+    #
+    # The QR is drawn server-side with the `qrcode` package (added to
+    # images/hub/Dockerfile). It is imported lazily so a hub image built before
+    # that change still starts: the page then shows the setup key and the
+    # otpauth:// URI instead of an image.
+    05-two-factor: |
+      import os, re, urllib.parse
+
+      from jupyterhub.handlers import BaseHandler
+      from markupsafe import Markup
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.orm import UserInfo
+      from tornado import web
+
+      _TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "ZAI")
+
+      def _otpauth_uri(username, secret):
+          label = urllib.parse.quote(f"{_TOTP_ISSUER}:{username}")
+          query = urllib.parse.urlencode({"secret": secret, "issuer": _TOTP_ISSUER})
+          return f"otpauth://totp/{label}?{query}"
+
+      def _qr_svg(data):
+          """Inline SVG QR for data, or "" when qrcode isn't installed."""
+          try:
+              import qrcode, qrcode.image.svg
+          except ImportError:
+              return ""
+          img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage)
+          svg = img.to_string()
+          if isinstance(svg, bytes):
+              svg = svg.decode("utf-8")
+          # qrcode sizes the SVG in millimetres; make it fill its container.
+          return re.sub(r'(<svg[^>]*?)\swidth="[^"]*"\s+height="[^"]*"',
+                        r'\1 width="100%" height="100%"', svg, count=1)
+
+      # Exposed to every template as {{ totp_qr(uri) }} so the signup success
+      # page can show the QR too; the /hub/2fa page gets it as a variable.
+      # JupyterHub calls any callable in template_vars with the current user
+      # and hands the template the RESULT, so the function the template calls
+      # has to be returned from one. Passed bare, signing up with two-factor
+      # ticked saved the account and then crashed before showing the QR.
+      c.JupyterHub.template_vars.update(
+          totp_qr=lambda user: (lambda uri: Markup(_qr_svg(uri))))
+
+      class TwoFactorHandler(BaseHandler):
+          """Enable or disable TOTP for the signed-in user."""
+
+          def _info(self):
+              info = UserInfo.find(self.db, self.current_user.name)
+              if info is None:
+                  raise web.HTTPError(404)
+              return info
+
+          def _back(self, msg):
+              return f"{self.hub.base_url}2fa?" + urllib.parse.urlencode({"msg": msg[:300]})
+
+          @web.authenticated
+          async def get(self):
+              info = self._info()
+              enabled = bool(info.has_2fa)
+              uri = _otpauth_uri(self.current_user.name, info.otp_secret)
+              html = await self.render_template(
+                  "two-factor.html",
+                  enabled=enabled,
+                  secret=info.otp_secret,
+                  otpauth_uri=uri,
+                  qr_svg=Markup(_qr_svg(uri)) if not enabled else "",
+                  flash=self.get_argument("msg", ""),
+              )
+              self.finish(html)
+
+          @web.authenticated
+          async def post(self):
+              info = self._info()
+              action = self.get_body_argument("action", "")
+              code = "".join(self.get_body_argument("code", "").split())
+              # Same check the authenticator runs at login (onetimepass, the
+              # current 30s window), so you can only turn 2FA on with a code
+              # that proves the app is already set up, and only off with a code
+              # that proves you still hold it.
+              if not code.isdigit() or not info.is_valid_token(code):
+                  self.redirect(self._back(
+                      "That code didn't match. Enter the current 6-digit code from your app."))
+                  return
+              if action == "enable":
+                  info.has_2fa = True
+                  self.db.commit()
+                  self.redirect(self._back(
+                      "Two-factor authentication is on. You'll be asked for a code at your next sign-in."))
+              elif action == "disable":
+                  info.has_2fa = False
+                  self.db.commit()
+                  self.redirect(self._back("Two-factor authentication is off."))
+              else:
+                  self.redirect(self._back("Nothing to do."))
+
+      _two_factor_handlers = [(r"/2fa", TwoFactorHandler)]
+
+      _na_get_handlers_2fa = NativeAuthenticator.get_handlers
+
+      def _get_handlers_2fa(self, app):
+          return list(_na_get_handlers_2fa(self, app)) + _two_factor_handlers
+
+      NativeAuthenticator.get_handlers = _get_handlers_2fa
+
+    # Caimex without a second registration. A user who signs in here gets a
+    # Caimex account in our organization with the same email and password, and
+    # an "Open Caimex" link that lands them there already signed in.
+    #
+    # Everything happens at SIGN-IN, not at Approve: registering a Caimex
+    # account needs a password, and sign-in is the only moment the hub holds
+    # the user's (it stores a hash). It is used for the calls below and never
+    # written anywhere.
+    #
+    #   first sign-in   1. as the service account, invite the user's address
+    #                      into the organization; the reply carries the
+    #                      invitation's token
+    #                   2. POST /api/auth/register with the user's email and
+    #                      password and that token: the account is created and
+    #                      joins the organization as an active member
+    #   every sign-in   POST /api/auth/login as the user, and keep the session
+    #                   token Caimex returns (in memory, about a day -- the
+    #                   lifetime of both that token and a hub session)
+    #   /hub/caimex     forwards the browser to Caimex's /auth/callback with
+    #                   the token in the URL fragment, the hand-off its own
+    #                   Google sign-in uses. With no token it offers to sign in
+    #                   again (templates/caimex.html), or sends the user to the
+    #                   Caimex login when that would not help
+    #
+    # The service account (an owner, admin or people admin of the organization,
+    # two-factor OFF) is needed because only a member can create invitations,
+    # and Caimex's organization endpoints take a sign-in session, not an API key.
+    #
+    # Signing in here never waits on Caimex and never fails because of it. The
+    # outcome is recorded in zai_caimex_accounts (hub database), shown on
+    # /hub/authorize, and anything not done is tried again at the next sign-in.
+    # An address that already has a Caimex account keeps it: the invitation
+    # stands for them to accept, and the hub leaves their password alone.
+    06-caimex-accounts: |
+      import asyncio, datetime, json, os, time, urllib.parse
+
+      import sqlalchemy as sa
+      from jupyterhub.handlers import BaseHandler
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.orm import UserInfo
+      from tornado import web
+      from tornado.escape import xhtml_escape
+      from tornado.httpclient import AsyncHTTPClient, HTTPRequest
+      from traitlets.log import get_logger
+
+      _CX_URL = os.environ.get("CAIMEX_API_URL", "").strip().rstrip("/")
+      _CX_WEB = os.environ.get("CAIMEX_WEB_URL", "").strip().rstrip("/")
+      _CX_ORG = os.environ.get("CAIMEX_ORG_ID", "").strip()
+      _CX_EMAIL = os.environ.get("CAIMEX_SERVICE_EMAIL", "").strip()
+      _CX_PASSWORD = os.environ.get("CAIMEX_SERVICE_PASSWORD", "")
+      _CX_SETTINGS = {
+          "CAIMEX_API_URL": _CX_URL, "CAIMEX_WEB_URL": _CX_WEB, "CAIMEX_ORG_ID": _CX_ORG,
+          "CAIMEX_SERVICE_EMAIL": _CX_EMAIL, "CAIMEX_SERVICE_PASSWORD": _CX_PASSWORD}
+
+      def _cx_encrypted(url):
+          """https, or plain http to this machine only (local testing)."""
+          u = urllib.parse.urlsplit(url)
+          return u.scheme == "https" or (
+              u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost"))
+
+      _CX_ON = all(_CX_SETTINGS.values())
+      if any(_CX_SETTINGS.values()) and not _CX_ON:
+          get_logger().warning(
+              "caimex accounts are OFF: not set: %s",
+              ", ".join(k for k, v in _CX_SETTINGS.items() if not v))
+      elif _CX_ON and not (_cx_encrypted(_CX_URL) and _cx_encrypted(_CX_WEB)):
+          # Users' passwords and sessions travel to these addresses.
+          get_logger().error(
+              "caimex accounts are OFF: CAIMEX_API_URL and CAIMEX_WEB_URL must be https")
+          _CX_ON = False
+      # Caimex tokens last 24 hours; stop using one a little before that.
+      _CX_TOKEN_SECONDS = 23 * 3600
+
+      # Own MetaData, not JupyterHub's Base: the hub's schema check and
+      # migrations never see this table.
+      #   status      created  the hub registered the account
+      #               invited  the address already had an account; invitation sent
+      #               failed   see detail; tried again at the next sign-in
+      #   auto_login  false once Caimex has refused the hub password for this
+      #               user, so the hub stops knocking on their account
+      _cx_table = sa.Table(
+          "zai_caimex_accounts", sa.MetaData(),
+          sa.Column("username", sa.Unicode(255), primary_key=True),
+          sa.Column("email", sa.Unicode(320)),
+          sa.Column("status", sa.Unicode(32)),
+          sa.Column("detail", sa.Unicode(600)),
+          sa.Column("auto_login", sa.Boolean),
+          sa.Column("updated_at", sa.DateTime))
+      # db: the hub's one database session (handlers' self.db is the same
+      # object), captured in get_handlers below; None until then.
+      _cx = {"db": None, "token": None, "login_failed": None}
+      _cx_sessions = {}                 # username -> (Caimex token, issued at)
+      _cx_running = {}                  # username -> the sign-in task in flight
+
+      # These two share the hub's session, as NativeAuthenticator's own writes
+      # do, so the commit below also commits whatever the hub had pending. A
+      # second connection would be cleaner but can stall the whole hub: on
+      # SQLite it waits, on the event loop, for a lock the hub itself holds.
+      # The session is rolled back here, and only here, when one of OUR
+      # statements fails -- it is unusable until then. Nothing else in this
+      # file rolls back, so a Caimex or network error never touches hub data.
+      def _cx_get(db, username):
+          try:
+              row = db.execute(
+                  sa.select(_cx_table.c.status, _cx_table.c.detail, _cx_table.c.auto_login)
+                  .where(_cx_table.c.username == username)).first()
+          except Exception:
+              db.rollback()
+              raise
+          return (row[0], row[1] or "", row[2] is not False) if row else (None, "", True)
+
+      def _cx_set(db, username, email, status, detail="", auto_login=True):
+          try:
+              db.execute(_cx_table.delete().where(_cx_table.c.username == username))
+              db.execute(_cx_table.insert().values(
+                  username=username, email=email, status=status, detail=detail[:600],
+                  auto_login=auto_login,
+                  updated_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)))
+              db.commit()
+          except Exception:
+              db.rollback()
+              raise
+
+      async def _cx_fetch(path, body, token=None):
+          headers = {"Content-Type": "application/json"}
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+          req = HTTPRequest(
+              _CX_URL + path, method="POST", headers=headers,
+              body=json.dumps(body), connect_timeout=5, request_timeout=20)
+          # raise_error=False covers HTTP statuses only; a refused connection,
+          # DNS failure or timeout still raises. Report those as 599 too.
+          try:
+              resp = await AsyncHTTPClient().fetch(req, raise_error=False)
+          except Exception as e:
+              get_logger().warning("caimex %s: %s", path, e)
+              return 599, {}
+          try:
+              data = json.loads(resp.body) if resp.body else {}
+          except ValueError:
+              data = {}
+          return resp.code, data if isinstance(data, dict) else {}
+
+      def _cx_reason(code, data):
+          if code == 599:
+              return "Caimex could not be reached"
+          # Caimex's wording only, never the body. Sign-in and register replies
+          # carry tokens, and its validation errors (422) repeat the rejected
+          # value under "input" -- for a register call, the user's password.
+          detail = data.get("detail", "")
+          if isinstance(detail, list):
+              detail = "; ".join(
+                  ".".join(str(p) for p in e.get("loc", [])[1:]) + ": " + str(e.get("msg", ""))
+                  for e in detail if isinstance(e, dict))
+          elif not isinstance(detail, str):
+              detail = ""
+          return f"HTTP {code} {detail}".strip()[:280]
+
+      async def _cx_service_login():
+          """Sign in as the service account and cache the token. Returns None,
+          or (code, data) to report as the failure. Caimex throttles sign-in
+          attempts per address, so a refusal is not retried for five minutes."""
+          failed = _cx["login_failed"]
+          if failed and time.monotonic() - failed[0] < 300:
+              return failed[1]
+          code, data = await _cx_fetch(
+              "/api/auth/login", {"email": _CX_EMAIL, "password": _CX_PASSWORD})
+          if code == 200 and data.get("access_token"):
+              _cx["token"], _cx["login_failed"] = data["access_token"], None
+              return None
+          if code == 599:
+              return 599, {}
+          if code == 200 and data.get("mfa_required"):
+              why = "the Caimex service account has two-factor on; turn it off"
+          else:
+              why = "Caimex service sign-in refused: " + _cx_reason(code, data)
+          _cx["login_failed"] = (time.monotonic(), (401, {"detail": why}))
+          return _cx["login_failed"][1]
+
+      async def _cx_invite(email):
+          """Invite email into the organization as the service account, signing
+          in first if needed and once more if the cached token has expired.
+          Re-inviting a pending address returns the same invitation."""
+          for attempt in (1, 2):
+              if not _cx["token"]:
+                  failure = await _cx_service_login()
+                  if failure:
+                      return failure
+              code, data = await _cx_fetch(
+                  f"/api/organizations/{_CX_ORG}/invitations",
+                  {"email": email, "role": "member"}, _cx["token"])
+              if code != 401 or attempt == 2:
+                  return code, data
+              _cx["token"] = None
+
+      def _cx_keep(username, token):
+          _cx_sessions[username] = (token, time.monotonic())
+
+      def _cx_session(username):
+          token, at = _cx_sessions.get(username, (None, 0))
+          if token and time.monotonic() - at < _CX_TOKEN_SECONDS:
+              return token
+          _cx_sessions.pop(username, None)
+          return None
+
+      async def _cx_register(db, username, email, password):
+          """First sign-in: create the account inside the organization.
+          Returns True when the user is now signed in to Caimex."""
+          code, data = await _cx_invite(email)
+          # 409: this address is already a member, so it already has an account.
+          if code not in (201, 409):
+              why = "invitation: " + _cx_reason(code, data)
+              get_logger().error("caimex account for %s: %s", username, why)
+              _cx_set(db, username, email, "failed", why)
+              return False
+          if code == 201:
+              # full_name: the hub has no real name, only the username.
+              # Without one Caimex shows the bare email address.
+              reg, rdata = await _cx_fetch("/api/auth/register", {
+                  "email": email, "password": password, "full_name": username,
+                  "invite_token": data.get("invite_token")})
+              if reg == 201 and rdata.get("access_token"):
+                  _cx_set(db, username, email, "created")
+                  _cx_keep(username, rdata["access_token"])
+                  return True
+              if reg != 409:          # 409: the address already has an account
+                  why = "register: " + _cx_reason(reg, rdata)
+                  get_logger().error("caimex account for %s: %s", username, why)
+                  _cx_set(db, username, email, "failed", why)
+                  return False
+          # Their own account, with their own password. The invitation (just
+          # sent, unless they were a member already) is theirs to accept.
+          _cx_set(db, username, email, "invited")
+          return False
+
+      async def _cx_sign_in(username, password):
+          """Run after every successful hub sign-in. Never raises."""
+          db = _cx["db"]
+          if db is None:
+              return
+          email = ""
+          try:
+              info = UserInfo.find(db, username)
+              if info is None or not info.is_authorized:
+                  return
+              email = (info.email or "").strip().lower()
+              status, _, auto_login = _cx_get(db, username)
+              if status not in ("created", "invited"):
+                  if not email:
+                      _cx_set(db, username, "", "failed", "No email address on file.")
+                      return
+                  if await _cx_register(db, username, email, password):
+                      return
+                  status, _, auto_login = _cx_get(db, username)
+              if status == "failed" or not auto_login or _cx_session(username):
+                  return
+              code, data = await _cx_fetch(
+                  "/api/auth/login", {"email": email, "password": password})
+              if code == 200 and data.get("access_token"):
+                  _cx_keep(username, data["access_token"])
+              elif code in (200, 401):
+                  # Two-factor on their Caimex account, or a different password
+                  # there. Either is the user's choice: Open Caimex shows them
+                  # the Caimex login from now on, and the hub stops trying.
+                  _cx_set(db, username, email, status, auto_login=False)
+          except Exception as e:
+              # The type only: an exception's text is not ours to vouch for.
+              get_logger().error("caimex account for %s: %s", username, type(e).__name__)
+              try:
+                  if _cx_get(db, username)[0] not in ("created", "invited"):
+                      _cx_set(db, username, email, "failed",
+                              "Internal error: " + type(e).__name__)
+              except Exception:
+                  pass
+
+      _na_authenticate = NativeAuthenticator.authenticate
+
+      async def _authenticate(self, handler, data):
+          username = await _na_authenticate(self, handler, data)
+          # One at a time per user; a second sign-in during the first adds nothing.
+          if username and _CX_ON and username not in _cx_running:
+              task = asyncio.ensure_future(_cx_sign_in(username, data["password"]))
+              _cx_running[username] = task    # the loop only holds a weak reference
+              task.add_done_callback(lambda _t, name=username: _cx_running.pop(name, None))
+          return username
+
+      NativeAuthenticator.authenticate = _authenticate
+
+      class OpenCaimex(BaseHandler):
+          """Send the signed-in user to Caimex, signed in there if we can."""
+
+          @web.authenticated
+          async def get(self):
+              if not _CX_ON:
+                  raise web.HTTPError(404)
+              name = self.current_user.name
+              landing = f"/org/{_CX_ORG}/overview"
+              # Clicked seconds after signing in: the Caimex work may still be
+              # running. Wait for it rather than fall through to a login page.
+              task = _cx_running.get(name)
+              if task is not None:
+                  await asyncio.wait([task], timeout=15)
+              token = _cx_session(name)
+              self.set_header("Cache-Control", "no-store")
+              self.set_header("Referrer-Policy", "no-referrer")
+              if token:
+                  # In the fragment, which browsers never send to a server.
+                  # Sent as a page that forwards the browser, NOT as a
+                  # redirect: the hub logs every redirect's target, and this
+                  # one is a live session.
+                  url = f"{_CX_WEB}/auth/callback#" + urllib.parse.urlencode(
+                      {"token": token, "redirect": landing})
+                  self.set_header("Content-Type", "text/html; charset=utf-8")
+                  self.finish(
+                      '<!doctype html><meta charset="utf-8">'
+                      '<meta name="referrer" content="no-referrer">'
+                      f'<meta http-equiv="refresh" content="0;url={xhtml_escape(url)}">'
+                      "<title>Opening Caimex</title><p>Opening Caimex&hellip;</p>")
+                  return
+              # No session. The hub only gets one when a password is typed, so
+              # a hub restart or a day-old tab leaves a signed-in user without
+              # it. If typing the password again would fix that, say so, once;
+              # otherwise (their own Caimex password or two-factor, or we just
+              # tried) Caimex's own login is the right place.
+              status, _, auto_login = _cx_get(self.db, name)
+              if (status in ("created", "invited") and auto_login
+                      and not self.get_argument("tried", "")):
+                  html = await self.render_template(
+                      "caimex.html",
+                      again_url=self.hub.base_url + "caimex/again",
+                      caimex_url=_CX_WEB + landing)
+                  self.finish(html)
+              else:
+                  self.redirect(_CX_WEB + landing)
+
+      class OpenCaimexAgain(BaseHandler):
+          """Sign out of the hub and come straight back through the login page
+          to Open Caimex, which then has a fresh session to hand over."""
+
+          @web.authenticated
+          async def get(self):
+              self.clear_login_cookie()
+              self.redirect(self.hub.base_url + "login?" + urllib.parse.urlencode(
+                  {"next": self.hub.base_url + "caimex?tried=1"}))
+
+      _na_get_handlers_cx = NativeAuthenticator.get_handlers
+
+      def _get_handlers_cx(self, app):
+          handlers = list(_na_get_handlers_cx(self, app))
+          if _CX_ON:
+              try:
+                  _cx_table.create(app.db.get_bind(), checkfirst=True)
+                  _cx["db"] = app.db
+              except Exception as e:
+                  self.log.error("caimex accounts disabled, no status table: %s", e)
+          return handlers + [(r"/caimex", OpenCaimex), (r"/caimex/again", OpenCaimexAgain)]
+
+      NativeAuthenticator.get_handlers = _get_handlers_cx
+
+      def _cx_status(username):
+          """(status, detail) for the Approve page; status None = not tried yet."""
+          try:
+              return _cx_get(_cx["db"], username)[:2]
+          except Exception:
+              return (None, "")
+
+      # JupyterHub CALLS any callable in template_vars with the current user and
+      # hands the template the result, so a function meant for the template to
+      # call has to be returned from one.
+      c.JupyterHub.template_vars.update(
+          caimex_on=_CX_ON, caimex_status=lambda user: _cx_status)
+
+singleuser:
+  # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
+  # metadata server, but this node's own address is 100.70.88.4 -- carrier-grade
+  # NAT space (100.64.0.0/10), which the chart counts as "public". Left alone, a
+  # notebook can reach every host port on the node: kubelet, the API server,
+  # node exporters, ingress. Replace the chart's public-internet rule with one
+  # that also excludes CGNAT and link-local. DNS stays allowed by the chart's
+  # dnsPorts* rules; the hub and proxy by its own policies.
+  #
+  # With that in place the chart's iptables init container is redundant, and it
+  # cannot run here anyway: it is privileged with NET_ADMIN, which the baseline
+  # Pod Security level enforced on the namespace rejects -- every spawn 403s.
+  cloudMetadata:
+    blockWithIptables: false
+  networkPolicy:
+    egressAllowRules:
+      nonPrivateIPs: false
+    egress:
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+                - 100.64.0.0/10
+                - 169.254.0.0/16
+  # The base file puts EVERY pod on the nvidia runtime. Here that is a leak, not
+  # a convenience: the toolkit on this node accepts NVIDIA_VISIBLE_DEVICES from
+  # unprivileged pods, and the CUDA notebook image sets it to `all`, so a
+  # "CPU only" server would be handed every GPU on the box outside the
+  # scheduler's accounting. `null` deletes the key; each GPU profile below
+  # re-adds it for itself, where the device plugin has allocated a slice.
+  extraPodConfig:
+    runtimeClassName: null
+
+  storage:
+    type: dynamic
+    # WEKA enforces this (capacityEnforcement: HARD), unlike local-path. The
+    # filesystem behind wekafs-dir is 1000 GB in total and shared with the
+    # claims in shared-pvcs.yaml -- 20 Gi x 25 users + 300 + 150 Gi fits.
+    # Raise it only if the WEKA filesystem grows.
+    capacity: 20Gi
+    dynamic:
+      storageClass: wekafs-dir
+    extraVolumes:
+      # One RWX claim each, created by sites/cpt-gpu170/shared-pvcs.yaml.
+      - name: shared-datasets
+        persistentVolumeClaim: {claimName: jupyter-shared-datasets}
+      - name: shared-team
+        persistentVolumeClaim: {claimName: jupyter-shared-team}
+      # 2 TiB of host RAM; DataLoader workers get room to breathe.
+      - name: dshm
+        emptyDir: {medium: Memory, sizeLimit: 8Gi}
+    extraVolumeMounts:
+      - name: shared-datasets
+        mountPath: /home/jovyan/shared
+        readOnly: true              # curated by admins; users cannot mutate it
+      - name: shared-team
+        mountPath: /home/jovyan/team
+      - name: dshm
+        mountPath: /dev/shm
+
+  # Two GPU tiers, one per MIG profile the GPU Operator exposes. Both have the
+  # same ~32 GB of VRAM; "Large" doubles the compute (32 SMs vs 16).
+  #
+  # Worst case if every slice is taken: 16 x 32G + 12 x 64G = 1.3 TB of limits
+  # against 2 TiB, and 16 x 4 + 12 x 8 = 160 CPU against 191 allocatable.
+  # Guarantees are what the scheduler actually reserves, and stay small.
+  profileList:
+    - display_name: "GPU — Standard"
+      slug: gpu-standard   # stable id: display_name gains a live "N free" suffix
+      description: "1 MIG slice (1g, 32 GB VRAM, 16 SMs), 32 GB RAM, 4 CPU. Start here."
+      default: true
+      kubespawner_override:
+        cpu_limit: 4
+        cpu_guarantee: 1
+        mem_limit: "32G"
+        mem_guarantee: "2G"
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/mig-1g.35gb: "1"}
+        extra_labels: {zai/profile: gpu-standard}   # read by the usage meter
+    - display_name: "GPU — Large"
+      slug: gpu-large   # stable id: display_name gains a live "N free" suffix
+      description: "1 MIG slice (2g, 32 GB VRAM, 32 SMs — twice the compute), 64 GB RAM, 8 CPU."
+      kubespawner_override:
+        cpu_limit: 8
+        cpu_guarantee: 2
+        mem_limit: "64G"
+        mem_guarantee: "4G"
+        extra_pod_config: {runtimeClassName: nvidia}
+        extra_resource_limits: {nvidia.com/mig-2g.35gb: "1"}
+        extra_labels: {zai/profile: gpu-large}
+    - display_name: "CPU only — no GPU"
+      slug: cpu   # stable id: display_name gains a live "N free" suffix
+      description: "16 GB RAM, 4 CPU, no GPU. Leaves a MIG slice free for someone who needs it."
+      kubespawner_override:
+        cpu_limit: 4
+        cpu_guarantee: 0.5
+        mem_limit: "16G"
+        mem_guarantee: "1G"
+        extra_resource_limits: {}
+        extra_labels: {zai/profile: cpu}

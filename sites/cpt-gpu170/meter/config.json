@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Usage meter settings. Applied by deploy.sh as ConfigMap zai-meter-config;",
+    "the meter re-reads it on every request, so no restart is needed (the",
+    "kubelet takes up to a minute to refresh a mounted ConfigMap).",
+    "",
+    "rates: price per hour, by resource. Each card applies from its `from` month",
+    "until a later card starts, so raising prices never rewrites past months.",
+    "0 or missing = not charged (the statement still shows the hours).",
+    "  gpu:mig-1g.35gb  one GPU Standard slice held for an hour",
+    "  gpu:mig-2g.35gb  one GPU Large slice held for an hour",
+    "  cpu              one CPU core (the server's limit) for an hour",
+    "  mem_gb           one GB of memory (the server's limit) for an hour",
+    "",
+    "default_gpu_budget_hours: GPU slice-hours per user per month, or null for",
+    "no limit. Admins can override it per user, or change it for everyone, on",
+    "/hub/usage; those settings take precedence over this value.",
+    "",
+    "idle_busy_threshold: a GPU minute below this compute activity (0..1)",
+    "counts as idle in the admin report."
+  ],
+  "timezone": "Africa/Harare",
+  "currency": "USD",
+  "rates": [
+    {
+      "from": "2026-09",
+      "per_hour": {
+        "gpu:mig-1g.35gb": 0,
+        "gpu:mig-2g.35gb": 0,
+        "cpu": 0,
+        "mem_gb": 0
+      }
+    }
+  ],
+  "default_gpu_budget_hours": null,
+  "idle_busy_threshold": 0.05
+}

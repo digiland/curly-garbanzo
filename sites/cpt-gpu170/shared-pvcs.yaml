@@ -1,0 +1,31 @@
+# The shared spaces for cpt-gpu170, on WEKA instead of per-node hostPaths.
+# Applied by sites/cpt-gpu170/deploy.sh before the hub.
+#
+# wekafs-dir is RWX with capacityEnforcement: HARD, so these sizes are real
+# ceilings -- ~/team filling up stops here instead of on someone's home.
+# Its reclaimPolicy is Retain: deleting a claim leaves the data (and the PV) on
+# WEKA until an admin removes the PV by hand.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jupyter-shared-datasets
+  namespace: jupyterhub
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: wekafs-dir
+  resources:
+    requests:
+      storage: 300Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jupyter-shared-team
+  namespace: jupyterhub
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: wekafs-dir
+  resources:
+    requests:
+      storage: 150Gi
