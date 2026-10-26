@@ -29,6 +29,13 @@ hub:
     METER_TOKEN:
       valueFrom:
         secretKeyRef: {name: zai-meter, key: token}
+    # GPU budget enforcement (see 08-budget-enforcement below).
+    # BUDGET_ENFORCE "false" is warn-only: people are warned and the hub logs
+    # which servers it WOULD stop, but stops nothing. Set "true" once the log
+    # shows it choosing the right ones.
+    BUDGET_ENFORCE: "false"
+    # Minutes between the final warning (budget used up) and the stop.
+    BUDGET_GRACE_MINUTES: "15"
     # Optional (see 06-caimex-accounts below). Without all five, nothing is
     # done on the Caimex side.
     CAIMEX_API_URL:
@@ -834,6 +841,601 @@ hub:
       # call has to be returned from one.
       c.JupyterHub.template_vars.update(
           caimex_on=_CX_ON, caimex_status=lambda user: _cx_status)
+
+    # The request-access form. NativeAuthenticator's signup keeps a username,
+    # an email and a password; an administrator deciding who gets GPU time
+    # needs to know who is asking and what for. This adds an application to
+    # every signup, held in zai_access_requests (hub database) and shown to
+    # admins on /hub/authorize.
+    #
+    # The applicant first says whether they are an individual or an
+    # organisation; an organisation answers six more questions. The browser
+    # hides and requires fields to match (templates/signup.html), but the rules
+    # are enforced HERE, because a browser's rules are only a courtesy: an
+    # application that fails them creates no account.
+    #
+    # The form's lists and the consent wording live in this file and reach the
+    # template as `access_form`, so there is one copy of each. A site without
+    # this block has no `access_form` and its signup page is unchanged.
+    07-access-requests: |
+      import datetime, json, re
+
+      import sqlalchemy as sa
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.handlers import SignUpHandler
+      from tornado import web
+      from traitlets.log import get_logger
+
+      _AR_SECTORS = [
+          "Health", "Education", "Language / natural language processing",
+          "Financial inclusion", "Agriculture", "Climate / energy",
+          "Creative economy", "Public sector", "Other"]
+      _AR_ORG_TYPES = [
+          "Startup", "MSME", "NGO / PVO", "Creative studio", "Innovation hub",
+          "Academic institute", "Public entity", "Corporate"]
+      _AR_GPU_SIZES = {"standard": "GPU Standard", "large": "GPU Large",
+                       "unsure": "Not sure yet"}
+      _AR_TYPES = {"individual": "Individual", "organisation": "Organisation"}
+      _AR_CONSENT = ("I agree that the information on this form may be stored and "
+                     "used to assess my request and to contact me.")
+
+      # (field, label shown to admins, kind, limit). The order is the order
+      # admins read them in. kind: text / long = free text up to `limit`
+      # characters; phone; email; date; whole = a whole number from 1 to
+      # `limit`; a list or dict = one of its entries.
+      _AR_EVERYONE = [
+          ("full_name", "Full name", "text", 120),
+          ("phone", "Phone", "phone", None),
+          ("country", "Country", "text", 80),
+          ("sector", "Sector", _AR_SECTORS, None),
+          ("project_name", "Product or project", "text", 120),
+          ("problem", "Problem being solved", "long", 1000),
+          ("current_solution", "How it is solved today", "long", 1000),
+          ("approach", "How they intend to solve it", "long", 1000),
+          ("gpu_hours", "GPU hours per month", "whole", 100000),
+          ("gpu_size", "GPU size", _AR_GPU_SIZES, None),
+          ("duration_months", "Months of access needed", "whole", 60)]
+      _AR_ORGANISATION = [
+          ("org_name", "Legal / operating name", "text", 160),
+          ("org_description", "Organisation in one line", "text", 200),
+          ("org_type", "Organisation type", _AR_ORG_TYPES, None),
+          ("org_registration", "Registration / incorporation number", "text", 60),
+          ("org_founded", "Founded / incorporated", "date", None),
+          ("contact2_name", "Secondary contact: name", "text", 120),
+          ("contact2_email", "Secondary contact: email", "email", None),
+          ("contact2_phone", "Secondary contact: phone", "phone", None)]
+      _AR_PHONE = re.compile(r"^\+?[0-9][0-9 ()\-]{6,19}$")
+      _AR_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}\.[^@\s.]{2,}$")
+
+      def _ar_check(label, kind, limit, value):
+          """The cleaned value, or raise ValueError with what is wrong."""
+          if not value:
+              raise ValueError(f"{label} is required.")
+          if kind in ("text", "long"):
+              if len(value) > limit:
+                  raise ValueError(f"{label} must be {limit} characters or fewer.")
+          elif kind == "phone":
+              if not _AR_PHONE.match(value):
+                  raise ValueError(f"{label} must be a phone number, digits with an optional leading +.")
+          elif kind == "email":
+              if not _AR_EMAIL.match(value) or len(value) > 320:
+                  raise ValueError(f"{label} must be an email address.")
+          elif kind == "date":
+              try:
+                  day = datetime.date.fromisoformat(value)
+              except ValueError:
+                  raise ValueError(f"{label} must be a date.") from None
+              if day > datetime.date.today():
+                  raise ValueError(f"{label} cannot be in the future.")
+              if day.year < 1800:
+                  raise ValueError(f"{label} must be a real date.")
+              return day.isoformat()
+          elif kind == "whole":
+              # Plain digits only: str.isdigit() also accepts characters such
+              # as "²" that int() then refuses.
+              if not re.fullmatch(r"[0-9]{1,9}", value) or not 1 <= int(value) <= limit:
+                  raise ValueError(f"{label} must be a whole number from 1 to {limit}.")
+              return int(value)
+          elif value not in kind:
+              raise ValueError(f"{label}: choose one of the options.")
+          return value
+
+      def _ar_validate(get):
+          """Check an application. get(name) returns the submitted text.
+          Returns (answers that passed, kept for re-showing the form;
+          a list of what is wrong, empty when the application is complete)."""
+          answers, problems = {}, []
+          kind_of_applicant = get("applicant_type")
+          if kind_of_applicant not in _AR_TYPES:
+              problems.append("Say whether you are applying as an individual or an organisation.")
+          else:
+              answers["applicant_type"] = kind_of_applicant
+          fields = list(_AR_EVERYONE)
+          if kind_of_applicant == "organisation":
+              fields = _AR_ORGANISATION + fields
+          for name, label, kind, limit in fields:
+              raw = get(name)
+              try:
+                  answers[name] = _ar_check(label, kind, limit, raw)
+              except ValueError as e:
+                  problems.append(str(e))
+                  if raw and kind in ("text", "long", "phone", "email", "date"):
+                      answers[name] = raw[:2000]      # so they can correct it
+          if answers.get("sector") == "Other":
+              try:
+                  answers["sector_other"] = _ar_check("Sector (other)", "text", 80, get("sector_other"))
+              except ValueError as e:
+                  problems.append(str(e))
+          if get("consent") != "yes":
+              problems.append("Tick the box to agree to how this information is used.")
+          else:
+              answers["consent"] = "yes"
+          return answers, problems
+
+      def _ar_rows(answers):
+          """[(label, value)] for an admin to read, in form order."""
+          rows = [("Applying as", _AR_TYPES.get(answers.get("applicant_type"), ""))]
+          fields = list(_AR_EVERYONE)
+          if answers.get("applicant_type") == "organisation":
+              fields = _AR_ORGANISATION + fields
+          for name, label, kind, _ in fields:
+              value = answers.get(name, "")
+              if isinstance(kind, dict):
+                  value = kind.get(value, value)
+              if name == "sector" and value == "Other":
+                  value = "Other: " + str(answers.get("sector_other", ""))
+              rows.append((label, value))
+          return rows
+
+      #   answers   the validated application as JSON, plus the consent wording
+      #             the applicant agreed to and when
+      #   gpu_hours a copy of one answer, as a number, for budgets to read
+      _ar_table = sa.Table(
+          "zai_access_requests", sa.MetaData(),
+          sa.Column("username", sa.Unicode(255), primary_key=True),
+          sa.Column("applicant_type", sa.Unicode(32)),
+          sa.Column("gpu_hours", sa.Integer),
+          sa.Column("answers", sa.UnicodeText),
+          sa.Column("submitted_at", sa.DateTime))
+      _ar = {"db": None}     # the hub's database session; see _get_handlers_ar
+
+      # These share the hub's session, as NativeAuthenticator's own writes do.
+      # It is rolled back only when one of OUR statements fails, because it is
+      # unusable until then.
+      def _ar_save(db, username, answers):
+          now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+          record = dict(answers, consent_text=_AR_CONSENT,
+                        consent_at=now.isoformat(timespec="seconds") + "Z")
+          try:
+              db.execute(_ar_table.delete().where(_ar_table.c.username == username))
+              db.execute(_ar_table.insert().values(
+                  username=username, applicant_type=answers["applicant_type"],
+                  gpu_hours=answers["gpu_hours"], answers=json.dumps(record),
+                  submitted_at=now))
+              db.commit()
+          except Exception:
+              db.rollback()
+              raise
+
+      def _ar_load(db, username):
+          try:
+              row = db.execute(
+                  sa.select(_ar_table.c.answers, _ar_table.c.submitted_at)
+                  .where(_ar_table.c.username == username)).first()
+          except Exception:
+              db.rollback()
+              raise
+          if row is None:
+              return None
+          answers = json.loads(row[0])
+          org = answers.get("applicant_type") == "organisation"
+          return {
+              "type": _AR_TYPES.get(answers.get("applicant_type"), ""),
+              "who": answers.get("org_name") if org else answers.get("full_name"),
+              "gpu_hours": answers.get("gpu_hours"),
+              "submitted": row[1].strftime("%d %b %Y") if row[1] else "",
+              "rows": _ar_rows(answers)}
+
+      def _ar_forget(db, username):
+          try:
+              db.execute(_ar_table.delete().where(_ar_table.c.username == username))
+              db.commit()
+          except Exception:
+              db.rollback()
+              raise
+
+      # -- signup ---------------------------------------------------------
+      _ar_signup_post = SignUpHandler.post
+      _ar_signup_render = SignUpHandler.render_template
+
+      def _signup_render(self, name, *args, **ns):
+          # What the applicant typed (never a password), so a refused form
+          # comes back filled in. NativeAuthenticator's own refusals -- a
+          # taken username, a weak password -- used to come back empty.
+          ns.setdefault("form", getattr(self, "_ar_form", {}))
+          ns.setdefault("form_problems", getattr(self, "_ar_problems", []))
+          return _ar_signup_render(self, name, *args, **ns)
+
+      async def _signup_post(self):
+          auth = self.authenticator
+          if not auth.enable_signup:
+              raise web.HTTPError(404)
+          answers, problems = _ar_validate(
+              lambda name: self.get_body_argument(name, "").strip())
+          # NativeAuthenticator creates the account first and compares the two
+          # passwords afterwards, so a mistyped confirmation leaves an account
+          # behind an error message. Catch it before anything is created.
+          if (self.get_body_argument("signup_password", "", strip=False)
+                  != self.get_body_argument("signup_password_confirmation", "", strip=False)):
+              problems.append("The two passwords do not match.")
+          self._ar_form = dict(
+              answers, username=self.get_body_argument("username", "").strip()[:64],
+              email=self.get_body_argument("email", "").strip()[:320])
+          if problems:
+              self._ar_problems = problems
+              html = await self.render_template(
+                  "signup.html", ask_email=auth.ask_email_on_signup, alert="alert-danger",
+                  result_message="Please correct the following and send the form again.",
+                  two_factor_auth=auth.allow_2fa, recaptcha_key=auth.recaptcha_key,
+                  tos=auth.tos)
+              self.finish(html)
+              return
+          username = auth.normalize_username(self.get_body_argument("username", ""))
+          existed = auth.user_exists(username)
+          await _ar_signup_post(self)
+          # Only for an account this request created: a taken username or a
+          # weak password must not overwrite somebody else's application.
+          if existed or not auth.user_exists(username):
+              return
+          try:
+              _ar_save(self.db, username, answers)
+          except Exception as e:
+              get_logger().error("access request for %s not saved: %s",
+                                 username, type(e).__name__)
+
+      SignUpHandler.post = _signup_post
+      SignUpHandler.render_template = _signup_render
+
+      # An application goes when its account does: Discard on /hub/authorize,
+      # or a deletion from the admin panel.
+      _ar_delete_user = NativeAuthenticator.delete_user
+
+      def _delete_user(self, user):
+          result = _ar_delete_user(self, user)
+          try:
+              _ar_forget(self.db, user.name)
+          except Exception as e:
+              self.log.error("access request for %s not removed: %s",
+                             user.name, type(e).__name__)
+          return result
+
+      NativeAuthenticator.delete_user = _delete_user
+
+      _na_get_handlers_ar = NativeAuthenticator.get_handlers
+
+      def _get_handlers_ar(self, app):
+          try:
+              _ar_table.create(app.db.get_bind(), checkfirst=True)
+              _ar["db"] = app.db
+          except Exception as e:
+              self.log.error("access requests will not be saved, no table: %s", e)
+          return _na_get_handlers_ar(self, app)
+
+      NativeAuthenticator.get_handlers = _get_handlers_ar
+
+      def _ar_for(username):
+          """A user's application for the Approve page, or None."""
+          try:
+              return _ar_load(_ar["db"], username)
+          except Exception:
+              return None
+
+      # access_request is wrapped because JupyterHub calls any callable in
+      # template_vars with the current user and hands the template the result.
+      c.JupyterHub.template_vars.update(
+          access_form={"sectors": _AR_SECTORS, "org_types": _AR_ORG_TYPES,
+                       "gpu_sizes": _AR_GPU_SIZES, "consent": _AR_CONSENT},
+          access_request=lambda user: _ar_for)
+
+    # GPU budgets that mean something for a server that is already running.
+    # Until now a budget was only checked when a GPU server STARTED (04-usage):
+    # someone with an hour left could start one and keep it for weeks.
+    #
+    #   Approve with hours   /hub/authorize shows the GPU hours the applicant
+    #                        asked for (07-access-requests) in a box beside
+    #                        Approve. Approving sets that as their monthly
+    #                        budget in the meter. Left empty, no budget is set.
+    #   The watcher          every BUDGET_CHECK_SECONDS, for each running GPU
+    #                        server, asks the meter how much of the month's
+    #                        budget is used:
+    #                          90%   first warning
+    #                          100%  final warning; the server stops in
+    #                                BUDGET_GRACE_MINUTES
+    #                          then  the server is stopped (files are kept; a
+    #                                CPU-only server still starts)
+    #
+    # It never acts on missing data: if the meter cannot be reached, nothing
+    # happens. A budget raised during the grace period cancels the stop. CPU
+    # servers and people with no budget are never touched. What has been
+    # decided for each person is kept in zai_budget_notices (hub database), so
+    # a warning is given once and a hub restart forgets nothing.
+    #
+    # Warnings show on the hub's pages (the control panel card and /hub/usage,
+    # through /hub/usage/notice.json). There is no email yet, so someone who
+    # stays inside JupyterLab is not told before the stop.
+    #
+    # Uses _meter (04-usage) and _STATIC_PROFILES / _mig_resource
+    # (03-gpu-capacity): the chart runs these blocks in one namespace.
+    08-budget-enforcement: |
+      import asyncio, datetime, json, os, re, time
+
+      import sqlalchemy as sa
+      from jupyterhub import orm
+      from jupyterhub.handlers import BaseHandler
+      from nativeauthenticator import NativeAuthenticator
+      from nativeauthenticator.orm import UserInfo
+      from tornado import web
+      from traitlets.log import get_logger
+
+      _BW_WARN_AT = float(os.environ.get("BUDGET_WARN_AT", "0.9"))
+      _BW_GRACE = float(os.environ.get("BUDGET_GRACE_MINUTES", "15")) * 60
+      _BW_EVERY = float(os.environ.get("BUDGET_CHECK_SECONDS", "120"))
+      _BW_ENFORCE = os.environ.get("BUDGET_ENFORCE", "false").strip().lower() == "true"
+      _BW_USER = re.compile(r"^[a-z][a-z0-9-]{2,30}$")
+
+      # One row per person per month. Times are seconds since the epoch.
+      #   warned_at   the 90% warning was raised
+      #   final_at    the budget ran out; the grace period started
+      #   stopped_at  the grace period ended and the server was stopped --
+      #               or, with `enforced` false, WOULD have been (warn-only)
+      _bw_table = sa.Table(
+          "zai_budget_notices", sa.MetaData(),
+          sa.Column("username", sa.Unicode(255), primary_key=True),
+          sa.Column("month", sa.Unicode(7), primary_key=True),
+          sa.Column("warned_at", sa.Float),
+          sa.Column("final_at", sa.Float),
+          sa.Column("stopped_at", sa.Float),
+          sa.Column("enforced", sa.Boolean))
+      _bw = {"db": None, "task": None}
+      _BW_NOTHING = {"warned_at": None, "final_at": None, "stopped_at": None, "enforced": None}
+
+      # These share the hub's session, as NativeAuthenticator's own writes do.
+      # It is rolled back only when one of OUR statements fails.
+      def _bw_load(db, username, month):
+          try:
+              row = db.execute(_bw_table.select().where(
+                  (_bw_table.c.username == username) & (_bw_table.c.month == month))).first()
+          except Exception:
+              db.rollback()
+              raise
+          return dict(_BW_NOTHING) if row is None else {k: getattr(row, k) for k in _BW_NOTHING}
+
+      def _bw_save(db, username, month, state):
+          try:
+              db.execute(_bw_table.delete().where(
+                  (_bw_table.c.username == username) & (_bw_table.c.month == month)))
+              db.execute(_bw_table.insert().values(username=username, month=month, **state))
+              db.commit()
+          except Exception:
+              db.rollback()
+              raise
+
+      def _bw_fraction(used, budget):
+          return 1.0 if budget <= 0 else used / budget
+
+      def _bw_step(state, used, budget, now):
+          """What to do about one running GPU server. Returns (state, action):
+          action is None, "warn", "final", "stop" or "clear". Pure: it decides,
+          the caller acts, and on "stop" the caller records the outcome."""
+          state = dict(state)
+          if budget is None:
+              return state, None
+          fraction = _bw_fraction(used, budget)
+          if fraction < _BW_WARN_AT:
+              # Back under the line: the budget was raised or hours credited.
+              cleared = bool(state["warned_at"] or state["final_at"])
+              state["warned_at"] = state["final_at"] = None
+              return state, "clear" if cleared else None
+          if fraction < 1:
+              action = None if state["warned_at"] else "warn"
+              if state["final_at"]:
+                  action = "clear"             # topped up during the grace period
+              state["warned_at"] = state["warned_at"] or now
+              state["final_at"] = None
+              return state, action
+          state["warned_at"] = state["warned_at"] or now
+          if not state["final_at"]:
+              state["final_at"] = now
+              return state, "final"
+          due = now - state["final_at"] >= _BW_GRACE
+          done = state["stopped_at"] is not None and state["stopped_at"] >= state["final_at"]
+          return state, "stop" if due and not done else None
+
+      def _bw_uses_gpu(spawner):
+          slug = (spawner.user_options or {}).get("profile")
+          profile = next((p for p in _STATIC_PROFILES if p.get("slug") == slug), None)
+          return bool(profile and _mig_resource(profile))
+
+      async def _bw_stop(app, user):
+          """Stop the user's server the way the hub's own Stop button does:
+          take it off the proxy, then stop it."""
+          spawner = user.spawner
+          if spawner.pending:
+              return False             # starting or already stopping; next pass
+          spawner._stop_pending = True
+          try:
+              await app.proxy.delete_user(user, "")
+              await user.stop("")
+          finally:
+              spawner._stop_pending = False
+          return True
+
+      async def _bw_check(app, user, now=None):
+          """One pass over one user. Returns the action taken, for the log."""
+          spawner = user.spawner
+          if not spawner.ready or not _bw_uses_gpu(spawner):
+              return None
+          usage = await _meter(f"/api/check/{user.name}", timeout=5)
+          budget, month = usage.get("budget"), usage.get("month")
+          if budget is None or not month:
+              return None
+          now = time.time() if now is None else now
+          before = _bw_load(app.db, user.name, month)
+          state, action = _bw_step(before, usage.get("gpu_hours_used") or 0, budget, now)
+          if action == "stop":
+              if _BW_ENFORCE:
+                  if not await _bw_stop(app, user):
+                      return None
+                  # A fresh grace period if they are ever running over budget again.
+                  state.update(final_at=None, stopped_at=now, enforced=True)
+              else:
+                  state.update(stopped_at=now, enforced=False)
+                  action = "would-stop"
+          if state != before:
+              _bw_save(app.db, user.name, month, state)
+          if action:
+              get_logger().warning(
+                  "gpu budget: %s %s (%.1f of %g GPU hours in %s)", action, user.name,
+                  usage.get("gpu_hours_used") or 0, budget, month)
+          return action
+
+      async def _bw_pass(app):
+          """Every running server, one at a time. One person's failure -- above
+          all an unreachable meter -- never stops the pass, and never a server."""
+          running = app.db.query(orm.Spawner).filter(orm.Spawner.server != None).all()  # noqa: E711
+          for orm_spawner in running:
+              if orm_spawner.name or orm_spawner.user is None:
+                  continue             # named servers are off on this site
+              try:
+                  await _bw_check(app, app.users[orm_spawner.user])
+              except Exception as e:
+                  get_logger().warning("gpu budget: could not check %s, doing nothing: %s",
+                                       orm_spawner.user.name, e)
+
+      async def _bw_forever(app):
+          get_logger().info(
+              "gpu budget watcher: every %gs, warn at %g%%, %g min grace, %s",
+              _BW_EVERY, _BW_WARN_AT * 100, _BW_GRACE / 60,
+              "ENFORCING" if _BW_ENFORCE else "warn-only (stops nothing)")
+          while True:
+              await asyncio.sleep(_BW_EVERY)
+              try:
+                  await _bw_pass(app)
+              except Exception as e:
+                  get_logger().error("gpu budget watcher pass failed: %s", e)
+
+      # -- what the signed-in user is shown -----------------------------------
+      class BudgetNotice(BaseHandler):
+          """Where the user stands, for the pages to show. Asks the meter now,
+          so it is right even between the watcher's passes."""
+
+          @web.authenticated
+          async def get(self):
+              out = {"stage": "none"}
+              try:
+                  name = self.current_user.name
+                  usage = await _meter(f"/api/check/{name}", timeout=5)
+                  budget, month = usage.get("budget"), usage.get("month")
+                  if budget is not None and month:
+                      used = usage.get("gpu_hours_used") or 0
+                      fraction = _bw_fraction(used, budget)
+                      state = _bw_load(self.db, name, month)
+                      spawner = self.current_user.spawner
+                      running = bool(spawner.ready and _bw_uses_gpu(spawner))
+                      # enforce: whether running out stops a server, so the
+                      # pages never promise a stop that warn-only won't make.
+                      out = {"stage": "none", "percent": round(fraction * 100),
+                             "used": used, "budget": budget, "month": month,
+                             "enforce": _BW_ENFORCE}
+                      if fraction >= 1:
+                          out["stage"] = "over"
+                          if running and _BW_ENFORCE and state["final_at"]:
+                              out["stage"] = "final"
+                              out["stops_at"] = datetime.datetime.fromtimestamp(
+                                  state["final_at"] + _BW_GRACE, datetime.timezone.utc
+                              ).isoformat(timespec="seconds")
+                      elif fraction >= _BW_WARN_AT:
+                          out["stage"] = "warn"
+              except Exception:
+                  out = {"stage": "none"}      # the pages never depend on the meter
+              self.set_header("Content-Type", "application/json")
+              self.set_header("Cache-Control", "no-store")
+              self.finish(json.dumps(out))
+
+      # -- approve, and set the budget, in one action ---------------------------
+      class ApproveWithBudget(BaseHandler):
+          @web.authenticated
+          async def post(self, name):
+              if not self.current_user.admin:
+                  raise web.HTTPError(403)
+              info = UserInfo.find(self.db, name) if _BW_USER.match(name) else None
+              if info is None:
+                  raise web.HTTPError(404)
+              raw = self.get_body_argument("gpu_hours", "").strip()
+              problem = None
+              if raw and (not re.fullmatch(r"[0-9]{1,6}", raw)):
+                  problem = "GPU hours must be a whole number, or empty for no budget."
+              elif raw:
+                  # Budget first: if the meter refuses it, do not approve, or
+                  # the user would start with no limit and nobody would notice.
+                  try:
+                      await _meter("/api/budget", {
+                          "user": name, "gpu_hours": float(raw),
+                          "by": self.current_user.name, "note": "Set at approval"})
+                  except Exception as e:
+                      problem = f"{name} was NOT approved: their GPU budget could not be saved ({e})."
+              if problem:
+                  html = await self.render_template(
+                      "authorization-area.html", flash=problem,
+                      ask_email=self.authenticator.ask_email_on_signup,
+                      users=self.db.query(UserInfo).all())
+                  self.finish(html)
+                  return
+              if not info.is_authorized:
+                  UserInfo.change_authorization(self.db, name)
+              self.redirect(self.hub.base_url + "authorize#" + name)
+
+      _bw_handlers = [(r"/usage/notice\.json", BudgetNotice),
+                      (r"/authorize-budget/([^/]+)", ApproveWithBudget)]
+      _na_get_handlers_bw = NativeAuthenticator.get_handlers
+
+      def _get_handlers_bw(self, app):
+          handlers = list(_na_get_handlers_bw(self, app)) + _bw_handlers
+          try:
+              _bw_table.create(app.db.get_bind(), checkfirst=True)
+              _bw["db"] = app.db
+              if _bw["task"] is None:
+                  _bw["task"] = asyncio.ensure_future(_bw_forever(app))
+          except Exception as e:
+              self.log.error("gpu budget watcher not started: %s", e)
+          return handlers
+
+      NativeAuthenticator.get_handlers = _get_handlers_bw
+
+      def _bw_marks(username, month):
+          """For the admin usage table: [(label, when)] for one person's month."""
+          try:
+              state = _bw_load(_bw["db"], username, month)
+          except Exception:
+              return []
+          when = lambda t: datetime.datetime.fromtimestamp(
+              t, datetime.timezone.utc).strftime("%d %b %H:%M UTC")
+          marks = []
+          if state["stopped_at"]:
+              marks.append(("stopped" if state["enforced"] else "would have stopped",
+                            when(state["stopped_at"])))
+          elif state["final_at"]:
+              marks.append(("final warning", when(state["final_at"])))
+          elif state["warned_at"]:
+              marks.append(("warned", when(state["warned_at"])))
+          return marks
+
+      # budget_marks is wrapped because JupyterHub calls any callable in
+      # template_vars with the current user and hands the template the result.
+      c.JupyterHub.template_vars.update(
+          budget_on=True, budget_enforce=_BW_ENFORCE,
+          budget_grace_minutes=round(_BW_GRACE / 60),
+          budget_marks=lambda user: _bw_marks)
 
 singleuser:
   # Egress lockdown. The chart already blocks the RFC 1918 ranges and the cloud
