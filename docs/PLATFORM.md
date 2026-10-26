@@ -80,6 +80,10 @@ its GPU, running unbilled while the hub showed it as gone.
    existing accounts included.
 3. Set `enforce: true` and run `scripts/05-jupyterhub.sh`.
 
+The shipped catalogs have `enforce: true` (since October 2026). Before
+deploying them, bring every negative balance on `/hub/billing` back to zero
+with an Adjustment: a user at or below zero cannot start a server.
+
 Admins' own servers are free while `admins_free: true`.
 
 **API for a payment provider.** `POST /hub/api/zai/credits` with an admin
@@ -233,9 +237,9 @@ GPU of that size), with a message saying which.
 
 ## Not yet done
 
-- **Online payments.** Credit is added by an admin, on request
-  ([CREDIT-REQUESTS.md](CREDIT-REQUESTS.md)) or directly, or through
-  `/api/zai/credits`; there is no checkout page yet.
+- **Online refunds.** Credit can be paid for online
+  ([PAYMENTS.md](PAYMENTS.md)), but refunds are a manual adjustment: the
+  payments API does not refund Sasai-backed payments yet.
 - **Bigger or extra volumes**, and charging for storage.
 - **Serverless endpoints** are built as an MVP; see
   [SERVERLESS.md](SERVERLESS.md). Workers are `kind='worker'` sessions in the

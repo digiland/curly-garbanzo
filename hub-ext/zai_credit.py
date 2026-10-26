@@ -1,10 +1,12 @@
 """Credit requests: a user asks for more credit, an administrator approves it.
 
-There is no online payment. A user asks on /hub/account (amount, how they
-will pay, a payment reference if they have one); an administrator sends them
-payment details, and once the money has arrived approves the request on
-/hub/billing, which adds the credit as an ordinary top-up in zai_platform's
-ledger. See docs/CREDIT-REQUESTS.md. Loaded by charts/jupyterhub-values.yaml,
+A user asks on /hub/account (amount, how they will pay, a payment reference
+if they have one); an administrator sends them payment details, and once the
+money has arrived approves the request on /hub/billing, which adds the credit
+as an ordinary top-up in zai_platform's ledger. When zai_payments is loaded
+and configured, the user can instead pay online: the request is created with
+method "online" and that module, not an administrator, settles it. See
+docs/CREDIT-REQUESTS.md. Loaded by charts/jupyterhub-values.yaml,
 03-zai-platform, after zai_platform (whose catalog, ledger and database this
 uses).
 
@@ -28,7 +30,13 @@ import zai_platform
 _CR_PRESETS = ["10", "25", "50", "100"]
 _CR_MIN, _CR_MAX = 5, 1000
 _CR_METHODS = {"ecocash": "EcoCash", "bank": "Bank transfer", "invoice": "Invoice (organisations)"}
+# How every request's method is shown, the online one included.
+_CR_LABELS = dict(_CR_METHODS, online="Online payment")
 _CR_AMOUNT = re.compile(r"^\d{1,4}(\.\d{1,2})?$")
+# Set by zai_payments.configure() when online payment is on: an async
+# function (handler, micros, payment method, mobile) -> the URL to send the
+# payer to. The form's online choices are "online:<PAYMENT METHOD>".
+_CR_ONLINE = {"start": None, "methods": []}
 _CR_REFERENCE_MAX, _CR_NOTE_MAX, _CR_REASON_MAX = 100, 500, 300
 
 
@@ -57,14 +65,20 @@ def _cr_init():
                     " ON zai_credit_requests(username, created)")
 
 
-def _cr_validate(amount, method, reference, note):
-    """(micros, method, reference, note) cleaned, or ValueError with what is wrong."""
+def _cr_amount(amount):
+    """The amount asked for, in micros, or ValueError with what is wrong."""
     amount = amount.strip().lstrip("$").strip()
     if not _CR_AMOUNT.match(amount):
         raise ValueError("Enter an amount in dollars, such as 25 or 25.50.")
     micros = zai_platform.to_micros(amount)
     if not _CR_MIN * zai_platform.MICROS <= micros <= _CR_MAX * zai_platform.MICROS:
         raise ValueError(f"Ask for between ${_CR_MIN} and ${_CR_MAX:,}.")
+    return micros
+
+
+def _cr_validate(amount, method, reference, note):
+    """(micros, method, reference, note) cleaned, or ValueError with what is wrong."""
+    micros = _cr_amount(amount)
     if method not in _CR_METHODS:
         raise ValueError("Choose how you will pay.")
     reference, note = reference.strip(), note.strip()
@@ -113,6 +127,10 @@ def _cr_decide(rid, admin, action, amount="", reference="", reason="", user_exis
             raise ValueError("No such request.")
         if req["status"] != "pending":
             raise ValueError(f"This request was already {req['status']}.")
+        if req["method"] == "online":
+            # Settled by zai_payments from the payment provider's answer; a
+            # hand decision here could credit a payment that never arrived.
+            raise ValueError("Online payments are confirmed by the payment provider. Use Check payment.")
         if action == "approve":
             try:
                 granted = zai_platform.to_micros(amount.strip().lstrip("$").strip())
@@ -125,7 +143,7 @@ def _cr_decide(rid, admin, action, amount="", reference="", reason="", user_exis
             reference = reference.strip()[:_CR_REFERENCE_MAX] or req["reference"]
             note = f"Credit request #{rid}"
             if reference:
-                note += f" · {_CR_METHODS.get(req['method'], req['method'])} ref {reference}"
+                note += f" · {_CR_LABELS.get(req['method'], req['method'])} ref {reference}"
             cur = con.execute(
                 "UPDATE zai_credit_requests SET status='approved', decided=?, decided_by=?, granted=?,"
                 " reference=? WHERE id=? AND status='pending'", (now, admin, granted, reference, rid))
@@ -158,6 +176,17 @@ class CreditRequestHandler(BaseHandler):
         if _cr_free(user):
             raise web.HTTPError(400, "Your servers are not charged; you do not need credit.")
         info = UserInfo.find(self.db, user.name)
+        method = self.get_body_argument("method", "")
+        if method.startswith("online:"):
+            if _CR_ONLINE["start"] is None:
+                raise web.HTTPError(400, "Online payment is not available right now. Choose another way to pay.")
+            try:
+                url = await _CR_ONLINE["start"](
+                    self, _cr_amount(self.get_body_argument("amount", "")), method[len("online:"):],
+                    self.get_body_argument("mobile", ""))
+            except ValueError as e:
+                raise web.HTTPError(400, str(e))
+            return self.redirect(url or self.hub.base_url + "account#credit")
         try:
             micros, method, reference, note = _cr_validate(
                 self.get_body_argument("amount", ""), self.get_body_argument("method", ""),
@@ -216,6 +245,7 @@ def _cr_view(user):
             view = {
                 "free": _cr_free(user), "mine": dict(mine) if mine else None,
                 "presets": _CR_PRESETS, "min": _CR_MIN, "max": _CR_MAX, "methods": _CR_METHODS,
+                "labels": _CR_LABELS, "online": list(_CR_ONLINE["methods"]),
                 "reference_max": _CR_REFERENCE_MAX, "note_max": _CR_NOTE_MAX,
                 "symbol": cat.symbol, "vat_percent": cat.vat_percent,
                 # For "$25 is about 19 hours on ...": the GPU sizes, cheapest first.

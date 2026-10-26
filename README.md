@@ -55,6 +55,7 @@ Live reference deployment: `https://notebooks.futurezim.com`
 | `docs/CAIMEX.md` | Optional: a Caimex account for each user at first sign-in, and one-click Open Caimex |
 | `docs/ACCESS-REQUESTS.md` | The request-access form: what applicants are asked, the rules, and what admins see |
 | `docs/CREDIT-REQUESTS.md` | Users ask for more credit on their Account page; admins approve it on Billing once paid |
+| `docs/PAYMENTS.md` | Optional: pay for credit online (card, EcoCash) through Econet's Eco Payments API and Sasai's checkout |
 
 ## Deploy
 

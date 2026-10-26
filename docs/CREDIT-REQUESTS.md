@@ -3,7 +3,9 @@
 Users ask for more credit on their **Account** page. An administrator sends
 them payment details, and once the money has arrived approves the request on
 the **Billing** page, which adds the credit. Nothing is paid through the site:
-payment happens outside it, as before. The code is `hub-ext/zai_credit.py`,
+payment happens outside it, as before. When online payment is set up
+([PAYMENTS.md](PAYMENTS.md)), the same form also offers **Pay now**, which
+needs no administrator. The code is `hub-ext/zai_credit.py`,
 loaded by the hub after `zai_platform.py` (`03-zai-platform` in
 `charts/jupyterhub-values.yaml`).
 
@@ -19,7 +21,7 @@ On **Account**, under **Request more credit**, they choose:
 | Note | Optional, up to 500 characters |
 
 Under the amount the form shows what it buys at today's prices, for example
-"$25.00 is about 18.9 hours on GPU · 18 GB, or 13.4 hours on GPU · 18 GB, high
+"$25.00 is about 15.8 hours on GPU · 18 GB, or 11.3 hours on GPU · 18 GB, high
 memory. Includes $3.35 VAT." The VAT rate is `currency.vat_percent` in the
 catalog.
 

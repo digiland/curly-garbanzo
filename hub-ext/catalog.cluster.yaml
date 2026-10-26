@@ -13,11 +13,11 @@
 # the nvidia runtime class from pods by default (CPU nodes do not have it).
 
 # Prices include Zimbabwe's 15.5% VAT, on the same basis as catalog.yaml:
-# $7.98 per whole H200 per hour before VAT, a MIG slice by its sevenths.
+# $7.98 per whole H200 per hour before VAT, a vGPU slice $1.37.
 currency: {code: USD, symbol: "$", price_note: "incl. VAT", vat_percent: 15.5}
 
 billing:
-  enforce: false
+  enforce: true
   min_minutes_to_start: 10
   admins_free: true
   signup_credit: 0
@@ -52,7 +52,7 @@ sizes:
     memory_guarantee: 1G
     node_selector: {caimex.io/pool: mig}
     runtime_class: nvidia
-    price_per_hour: 1.32
+    price_per_hour: 1.58
 
   - slug: gpu-whole
     name: "GPU · whole H200"
