@@ -277,5 +277,61 @@ class Endpoints(Case):
         self.assertNotIn("Coming soon", page)
 
 
+class SelfServiceEndpoints(Case):
+    """Members of serverless.creators_group create and delete their own endpoints."""
+
+    def endpoint(self, owner):
+        return {"id": "abcdefabcdef", "name": "echo", "owner": owner, "size": "cpu", "template": "pytorch",
+                "workdir": "endpoints/echo", "command": "python handler.py", "env": [], "maxWorkers": 1,
+                "idleTimeout": 30, "executionTimeout": 600, "jobs": [],
+                "health": {"jobs": {"inQueue": 0, "inProgress": 0}, "lastError": None,
+                           "workers": {"idle": 0, "running": 0, "initializing": 0}}}
+
+    def page(self, user, endpoints=()):
+        return self.render("endpoints.html", user=user, endpoints=list(endpoints), unavailable="", spend={},
+                           message="", error="", public_host="h", users=["alice", "tendai"], now_ms=0, form={},
+                           can_create=zai_platform.can_create_endpoints(user))
+
+    def member(self, name="tendai", groups=("endpoint-creators",)):
+        u = person(name)
+        u.groups = [types.SimpleNamespace(name=g) for g in groups]
+        return u
+
+    def test_who_may_create(self):
+        self.assertEqual(zai_platform.CATALOG.sv_creators_group, "endpoint-creators")
+        self.assertTrue(zai_platform.can_create_endpoints(self.member()))
+        self.assertFalse(zai_platform.can_create_endpoints(self.member(groups=("other",))))
+        admin = self.member(groups=())
+        admin.admin = True
+        self.assertTrue(zai_platform.can_create_endpoints(admin))
+
+    def test_no_group_configured_means_admins_only(self):
+        zai_platform.CATALOG.sv_creators_group = ""
+        self.assertFalse(zai_platform.can_create_endpoints(self.member()))
+
+    def test_member_gets_the_form_without_an_owner_choice(self):
+        page = self.page(self.member())
+        self.assertIn('id="create"', page)
+        self.assertNotIn('name="owner"', page)
+        self.assertIn("create the endpoint below", page)
+        self.assertIn("Folder in your home", page)
+
+    def test_non_member_is_told_to_ask(self):
+        page = self.page(self.member(groups=()))
+        self.assertNotIn('id="create"', page)
+        self.assertIn("ask an administrator to create the endpoint", page)
+
+    def test_admin_still_picks_the_owner(self):
+        admin = self.member(groups=())
+        admin.admin = True
+        page = self.page(admin)
+        self.assertIn('name="owner"', page)
+        self.assertIn("Folder in their home", page)
+
+    def test_member_deletes_only_their_own(self):
+        self.assertIn('value="delete"', self.page(self.member(), [self.endpoint("tendai")]))
+        self.assertNotIn('value="delete"', self.page(self.member(groups=()), [self.endpoint("tendai")]))
+
+
 if __name__ == "__main__":
     unittest.main()

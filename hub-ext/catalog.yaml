@@ -114,6 +114,13 @@ serverless:
   # GPUs all serverless workers together may hold. The rest stay for notebooks.
   max_gpus: 2
   max_workers_per_endpoint: 3
+  # Members of this JupyterHub group create and delete their own endpoints
+  # (owner: themselves) without an administrator. Add people at /hub/admin ->
+  # Groups. Empty: only administrators create endpoints.
+  creators_group: endpoint-creators
+  # How many endpoints a group member may have at once. Administrators
+  # creating endpoints for someone are not limited.
+  max_endpoints_per_user: 3
 
 # Curated images. Every template is built FROM the notebook image, so each one
 # still runs JupyterLab, SSH and the port proxy; the template adds an app.

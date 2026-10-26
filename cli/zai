@@ -19,8 +19,9 @@ Serverless endpoints (docs/SERVERLESS.md):
     zai job <endpoint> <job-id>                  # status / output
     zai cancel <endpoint> <job-id>
     zai health <endpoint>
-    zai endpoint create --owner alice --name echo --size cpu --dir endpoints/echo   # admins
-    zai endpoint delete <endpoint>                                                  # admins
+    zai endpoint create --name echo --size cpu --dir endpoints/echo   # your own, if an admin allowed it
+    zai endpoint create --owner alice --name echo ...                 # admins, for someone
+    zai endpoint delete <endpoint>
 
 Settings are kept in ~/.config/zai/config.json (mode 600). ZAI_HOST and
 ZAI_TOKEN override it, which is handy in CI (ZAI_GATEWAY overrides the
@@ -295,7 +296,8 @@ def cmd_endpoint(a):
     if a.action == "list":
         eps = gateway(cfg, "GET", "/endpoints" + ("?all=1" if a.all else ""))["endpoints"]
         if not eps:
-            print("No endpoints. An administrator creates them: zai endpoint create --help")
+            print("No endpoints. Create one (zai endpoint create --help) if an administrator has allowed you to,\n"
+                  "or ask an administrator to create it.")
             return
         print(f"{'ID':<14} {'NAME':<20} {'OWNER':<16} {'SIZE':<16} {'TEMPLATE':<10} WORKERS")
         for e in eps:
@@ -530,7 +532,8 @@ def main(argv=None):
     s.add_argument("action", choices=["list", "create", "delete"])
     s.add_argument("id", nargs="?", help="endpoint id (delete)")
     s.add_argument("--all", action="store_true", help="list: everyone's (admins)")
-    s.add_argument("--owner", help="create: the user whose credit and home volume it uses")
+    s.add_argument("--owner", help="create: the user whose credit and home volume it uses (default: you; "
+                   "someone else: admins only)")
     s.add_argument("--name")
     s.add_argument("--size", default="cpu", help="create: a size slug (zai sizes)")
     s.add_argument("--template", default="pytorch")
