@@ -75,7 +75,8 @@
     {% if enable_signup %}
     <p class="aside">No account yet? <a href="{{ base_url }}signup">Request access</a>.</p>
     {% endif %}
-    <p class="aside">Sign-in locks for 15 minutes after 5 failed attempts. Forgotten your password? An administrator can reset it.</p>
+    {# zai_reset_on: hub-ext/zai_reset.py, when email is configured. #}
+    <p class="aside">Sign-in locks for 15 minutes after 5 failed attempts. Forgotten your password? {% if zai_reset_on is defined and zai_reset_on %}<a href="{{ base_url }}forgot">Reset it by email</a>.{% else %}An administrator can reset it.{% endif %}</p>
   </section>
 </main>
 </div>

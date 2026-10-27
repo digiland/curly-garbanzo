@@ -126,6 +126,30 @@ hub:
     # once. Empty turns the allowance off. Only matters when the five
     # settings above are present.
     CAIMEX_FREE_ALLOWANCE_USD: "5"
+    # Optional: self-service password reset by email (hub-ext/zai_reset.py,
+    # docs/PASSWORD-RESET.md). Sends through RESEND_API_KEY above or SMTP_HOST;
+    # off without a sender, a from-address and the site's public address.
+    ZAI_PUBLIC_URL:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: public-url, optional: true}
+    MAIL_FROM:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: from, optional: true}
+    SMTP_HOST:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: smtp-host, optional: true}
+    SMTP_PORT:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: smtp-port, optional: true}
+    SMTP_USERNAME:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: smtp-username, optional: true}
+    SMTP_PASSWORD:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: smtp-password, optional: true}
+    SMTP_SECURITY:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: smtp-security, optional: true}
     # Optional: pay for credit online through Econet's Eco Payments API
     # (Sasai, card, EcoCash; hub-ext/zai_payments.py, docs/PAYMENTS.md). Off
     # unless the client id and secret are set.
@@ -298,6 +322,10 @@ hub:
       # Optional authenticator-app sign-in, /hub/account/2fa (hub-ext/zai_2fa.py).
       import zai_2fa
       zai_2fa.configure(c)
+      # Self-service password reset by email (hub-ext/zai_reset.py). After
+      # zai_2fa: a reset asks two-factor users for their code. Off without email.
+      import zai_reset
+      zai_reset.configure(c)
       # Optional Caimex account and Open Caimex (hub-ext/zai_caimex.py); does
       # nothing unless the CAIMEX_ settings are present.
       import zai_caimex

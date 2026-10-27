@@ -1,0 +1,82 @@
+{% extends "page.html" %}
+{# Served by ResetHandler (hub-ext/zai_reset.py) at /hub/reset/<link>.
+   `username` is None when the link is unknown, used or expired. `needs_code`
+   asks for an authenticator code (users with two-factor on). `done` after the
+   password was changed. #}
+
+{% block title %}Choose a new password · ZAI Notebooks{% endblock %}
+
+{% block script %}
+{{ super() }}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var eye = document.getElementById('eye');
+    if (!eye) return;
+    var f = ['password_input', 'confirm_input'].map(function (i) { return document.getElementById(i); });
+    eye.addEventListener('click', function () {
+      var show = f[0].getAttribute('type') === 'password';
+      f.forEach(function (el) { el.setAttribute('type', show ? 'text' : 'password'); });
+      eye.textContent = show ? 'HIDE' : 'SHOW';
+      eye.setAttribute('aria-pressed', show);
+    });
+  });
+</script>
+{% endblock script %}
+
+{% block main %}
+<div class="z-auth-outer">
+<main class="z-auth">
+  {% include "zai-panel.html" %}
+  <section class="z-auth-card">
+    {% if done %}
+      <div>
+        <div class="z-eyebrow">{{ username }}</div>
+        <h2>Password changed</h2>
+      </div>
+      <p class="z-alert is-ok" role="status">Your new password works now. Every device that was signed in has been signed out.</p>
+      <p class="aside">Your Caimex password hasn't changed. If Open Caimex asks you to sign in, use your Caimex password, or Caimex's own "forgot password".</p>
+      <a class="z-btn is-block" href="{{ base_url }}login">Sign in</a>
+    {% elif not username %}
+      <div>
+        <div class="z-eyebrow">Sign-in help</div>
+        <h2>This link no longer works</h2>
+      </div>
+      <p class="z-alert is-bad" role="alert">{{ error or "Reset links work once, for 30 minutes. This one has expired or was already used." }}</p>
+      <a class="z-btn is-block" href="{{ base_url }}forgot">Send a new link</a>
+    {% else %}
+      <div>
+        <div class="z-eyebrow">{{ username }}</div>
+        <h2>Choose a new password</h2>
+      </div>
+      {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
+      <form action="{{ base_url }}reset/{{ link }}" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <div class="z-field">
+          <label for="password_input">New password</label>
+          <div class="z-input-wrap">
+            <input id="password_input" class="z-input" type="password" name="password" autocomplete="new-password"
+                   minlength="{{ min_length }}" autofocus required>
+            <button id="eye" class="z-eye" type="button" aria-label="Show passwords" aria-pressed="false">SHOW</button>
+          </div>
+          <span class="hint">At least {{ min_length }} characters and not a common password.</span>
+        </div>
+        <div class="z-field">
+          <label for="confirm_input">Confirm new password</label>
+          <input id="confirm_input" class="z-input" type="password" name="confirm" autocomplete="new-password"
+                 minlength="{{ min_length }}" required>
+        </div>
+        {% if needs_code %}
+        <div class="z-field">
+          <label for="code_input">Authenticator code</label>
+          <input id="code_input" class="z-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="7" required placeholder="The 6-digit code your app shows now">
+          <span class="hint">You use two-factor sign-in, so a reset also needs your code. Lost your phone? Ask an administrator.</span>
+        </div>
+        {% endif %}
+        <input type="submit" class="z-btn is-block" value="Change password">
+      </form>
+    {% endif %}
+  </section>
+</main>
+</div>
+{% endblock main %}

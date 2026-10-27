@@ -1,0 +1,36 @@
+{% extends "page.html" %}
+{# Served by ForgotHandler (hub-ext/zai_reset.py) at /hub/forgot. `sent` is
+   true after the form is sent; the page says the same thing whether or not the
+   address has an account. #}
+
+{% block title %}Forgot password · ZAI Notebooks{% endblock %}
+
+{% block main %}
+<div class="z-auth-outer">
+<main class="z-auth">
+  {% include "zai-panel.html" %}
+  <section class="z-auth-card">
+    <div>
+      <div class="z-eyebrow">Sign-in help</div>
+      <h2>Forgot your password?</h2>
+    </div>
+    {% if sent %}
+      <p class="z-alert is-ok" role="status">If an account uses <strong>{{ email }}</strong>, we've sent it a link to choose a new password. The link works once, for 30 minutes. Check your spam folder if it doesn't arrive in a few minutes.</p>
+      <p class="aside"><a href="{{ base_url }}login">Back to sign in</a> · <a href="{{ base_url }}forgot">Send another link</a></p>
+    {% else %}
+      <p class="intro">Enter the email address you signed up with and we'll send you a link to choose a new password.</p>
+      <form action="{{ base_url }}forgot" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <div class="z-field">
+          <label for="email_input">Email address</label>
+          <input id="email_input" class="z-input" type="email" name="email" value="{{ email }}"
+                 autocomplete="email" autofocus required maxlength="320">
+        </div>
+        <input type="submit" class="z-btn is-block" value="Send reset link">
+      </form>
+      <p class="aside">Remembered it? <a href="{{ base_url }}login">Back to sign in</a>. No access to that email any more? Ask an administrator to reset your password.</p>
+    {% endif %}
+  </section>
+</main>
+</div>
+{% endblock main %}
