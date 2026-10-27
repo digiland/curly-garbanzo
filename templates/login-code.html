@@ -1,0 +1,58 @@
+{% extends "page.html" %}
+{# Served by SignInCodeHandler (hub-ext/zai_2fa.py) at /hub/login/code, the
+   second step of signing in for a user with two-factor sign-in on.
+   `ended` says why there is nothing waiting for a code (timed out, too many
+   wrong codes, locked); otherwise `username` is who is signing in. #}
+
+{% block title %}Authenticator code · ZAI Notebooks{% endblock %}
+
+{% block announcement %}{% endblock %}
+
+{% block stylesheet %}
+{{ super() }}
+<style>
+  /* "Back to sign in" posts, so it is a button made to look like the links beside it. */
+  .z-link { background: none; border: 0; padding: 0; font: inherit; font-weight: 600;
+            color: var(--z-gold-deep); text-decoration: underline; cursor: pointer; }
+</style>
+{% endblock stylesheet %}
+
+{% block main %}
+<div class="z-auth-outer">
+<main class="z-auth">
+  {% include "zai-panel.html" %}
+  <section class="z-auth-card">
+    {% if ended %}
+      <div>
+        <div class="z-eyebrow">Sign in</div>
+        <h2>Sign in again</h2>
+      </div>
+      <p class="z-alert is-bad" role="alert">{{ ended }}</p>
+      <a class="z-btn is-block" href="{{ base_url }}login{% if next %}?next={{ next }}{% endif %}">Sign in</a>
+    {% else %}
+      <div>
+        <div class="z-eyebrow">{{ username }}</div>
+        <h2>Enter your authenticator code</h2>
+      </div>
+      {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
+      <p class="intro">Open your authenticator app and enter the 6-digit code it shows for ZAI Notebooks.</p>
+      <form action="{{ base_url }}login/code{% if next %}?next={{ next }}{% endif %}" method="post" role="form">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <div class="z-field">
+          <label for="code_input">Authenticator code</label>
+          <input id="code_input" class="z-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 autocapitalize="off" autocorrect="off" maxlength="7" autofocus>
+        </div>
+        <input type="submit" id="code_submit" class="z-btn is-block" value="Verify">
+      </form>
+      <form action="{{ base_url }}login/code{% if next %}?next={{ next }}{% endif %}" method="post">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="cancel">
+        <p class="aside">Not you, or signing in as someone else? <button type="submit" class="z-link">Back to sign in</button>.</p>
+      </form>
+      <p class="aside">Lost your phone? Ask an administrator to turn two-factor sign-in off for your account.</p>
+    {% endif %}
+  </section>
+</main>
+</div>
+{% endblock main %}
