@@ -277,5 +277,33 @@ class Endpoints(Case):
         self.assertNotIn("Coming soon", page)
 
 
+class Logout(unittest.TestCase):
+    """templates/page.html, the base of every page: Logout asks first."""
+
+    def render(self, **variables):
+        env = Environment(autoescape=True, loader=DictLoader({
+            "templates/page.html": "{% block login_widget %}{% endblock %}{% block script %}{% endblock %}",
+            "page.html": open(os.path.join(REPO, "templates", "page.html")).read()}))
+        return env.get_template("page.html").render(
+            base_url="/hub/", logout_url="/hub/logout", login_url="/hub/login", **variables)
+
+    def test_asks_before_signing_out(self):
+        page = self.render(user=types.SimpleNamespace(name="tendai", active=False))
+        self.assertIn('id="logout"', page)
+        self.assertIn('<dialog id="z-logout"', page)
+        self.assertIn("Sign out of ZAI Notebooks?", page)
+        self.assertIn('<a class="z-btn" href="/hub/logout">Sign out</a>', page)
+        self.assertNotIn("still running", page)
+
+    def test_warns_that_a_running_server_keeps_using_credit(self):
+        page = self.render(user=types.SimpleNamespace(name="tendai", active=True))
+        self.assertIn("Your server is still running", page)
+
+    def test_nothing_to_ask_when_signed_out(self):
+        page = self.render(user=None)
+        self.assertNotIn("z-logout", page.replace(".z-logout", ""))
+        self.assertIn('id="login"', page)
+
+
 if __name__ == "__main__":
     unittest.main()

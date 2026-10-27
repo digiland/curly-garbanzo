@@ -503,6 +503,16 @@
 
   [data-bs-theme="dark"] .modal-content { background: var(--z-surface); color: var(--z-ink); }
 
+  /* Asks before Logout (below). */
+  .z-logout {
+    width: min(26rem, calc(100vw - 2rem)); padding: 1.5rem; border: 1px solid var(--z-line);
+    border-radius: var(--z-radius); background: var(--z-surface); color: var(--z-ink); box-shadow: var(--z-shadow);
+  }
+  .z-logout::backdrop { background: rgba(14,16,19,.55); }
+  .z-logout h2 { font-size: 1.25rem; margin: 0 0 .5rem; }
+  .z-logout p { margin: 0 0 .5rem; color: var(--z-ink-2); }
+  .z-logout-actions { display: flex; gap: .6rem; justify-content: flex-end; flex-wrap: wrap; margin-top: 1.25rem; }
+
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 {% endblock stylesheet %}
@@ -543,6 +553,38 @@
 
 {% block script %}
 {{ super() }}
+{# Logout asks first. Without script, or in a browser without <dialog>, the
+   Logout link signs out straight away as before. Signing out does not stop
+   servers (JupyterHub's shutdown_on_logout is off), so say so while one runs. #}
+{% if user %}
+<dialog id="z-logout" class="z-logout" aria-labelledby="z-logout-title">
+  <h2 id="z-logout-title">Sign out of ZAI Notebooks?</h2>
+  {% if user.active %}
+  <p>Your server is still running. Signing out doesn't stop it, and it keeps using credit until you stop it on Home.</p>
+  {% endif %}
+  <form method="dialog" class="z-logout-actions">
+    <button class="z-btn is-quiet" value="cancel" autofocus>Cancel</button>
+    <a class="z-btn" href="{{ logout_url }}">Sign out</a>
+  </form>
+</dialog>
+<script>
+  (function () {
+    var link = document.getElementById("logout"), box = document.getElementById("z-logout");
+    if (!link || !box || typeof box.showModal !== "function") return;
+    link.addEventListener("click", function (ev) {
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button) return;   // a new tab: no question
+      ev.preventDefault();
+      box.showModal();
+    });
+    // A click on the dim area around the box closes it, like Cancel. Clicks
+    // on the box's own padding also land on the dialog, hence the bounds.
+    box.addEventListener("click", function (ev) {
+      var r = box.getBoundingClientRect();
+      if (ev.target === box && (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom)) box.close();
+    });
+  })();
+</script>
+{% endif %}
 <script>
   // Mark the nav link for the page being shown (the template does not know it).
   (function () {
