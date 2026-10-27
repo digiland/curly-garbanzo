@@ -34,7 +34,7 @@ kubectl -n jupyterhub create configmap hub-zai \
   --from-file=hub-ext/zai_platform.py --from-file=hub-ext/zai_2fa.py \
   --from-file=hub-ext/zai_caimex.py --from-file=hub-ext/zai_access.py \
   --from-file=hub-ext/zai_credit.py --from-file=hub-ext/zai_myusage.py \
-  --from-file=hub-ext/zai_payments.py \
+  --from-file=hub-ext/zai_payments.py --from-file=hub-ext/zai_reset.py \
   --from-file=hub-ext/catalog.yaml \
   ${ZAI_EXTRA_CATALOG:+--from-file=$ZAI_EXTRA_CATALOG} \
   --from-file=zai=cli/zai --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
@@ -99,6 +99,22 @@ elif kubectl -n jupyterhub get secret eco-payments >/dev/null 2>&1; then
 else
     echo "note: ECO_PAYMENTS_CLIENT_SECRET unset - online payment is off"
 fi
+# Outgoing email for password reset (hub-ext/zai_reset.py, docs/PASSWORD-RESET.md):
+# the site's address for the links, a from-address, and SMTP if not Resend.
+# A run without SMTP_HOST and MAIL_FROM keeps an existing secret.
+if [ -n "${SMTP_HOST:-}${MAIL_FROM:-}" ] || ! kubectl -n jupyterhub get secret outgoing-mail >/dev/null 2>&1; then
+    kubectl -n jupyterhub create secret generic outgoing-mail \
+        --from-literal=public-url="${PUBLIC_HOSTNAME:+https://$PUBLIC_HOSTNAME}" \
+        --from-literal=from="${MAIL_FROM:-}" \
+        --from-literal=smtp-host="${SMTP_HOST:-}" \
+        --from-literal=smtp-port="${SMTP_PORT:-}" \
+        --from-literal=smtp-username="${SMTP_USERNAME:-}" \
+        --from-literal=smtp-password="${SMTP_PASSWORD:-}" \
+        --from-literal=smtp-security="${SMTP_SECURITY:-}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+else
+    echo "note: SMTP_HOST and MAIL_FROM unset - keeping the existing outgoing-mail secret"
+fi
 # Optional S3-compatible object storage. Absent -> `spaces` reports it is not
 # configured and notebooks start normally.
 if [ -n "${S3_ENDPOINT:-}" ]; then
@@ -118,7 +134,7 @@ helm repo update jupyterhub
 # The hub reads catalog.yaml and the module only at startup. Hashing them into
 # a pod annotation makes helm roll the hub exactly when they change. Running
 # servers are unaffected by a hub restart; the API is down for ~30 s.
-ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/zai_myusage.py hub-ext/zai_payments.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
+ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/zai_myusage.py hub-ext/zai_payments.py hub-ext/zai_reset.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
 helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
   -f charts/jupyterhub-values.yaml ${EXTRA_VALUES:+-f $EXTRA_VALUES} \
