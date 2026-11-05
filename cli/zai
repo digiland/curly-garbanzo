@@ -19,8 +19,9 @@ Serverless endpoints (docs/SERVERLESS.md):
     zai job <endpoint> <job-id>                  # status / output
     zai cancel <endpoint> <job-id>
     zai health <endpoint>
-    zai endpoint create --owner alice --name echo --size cpu --dir endpoints/echo   # admins
-    zai endpoint delete <endpoint>                                                  # admins
+    zai endpoint create --name echo --size cpu --dir endpoints/echo   # your own, if an admin allowed it
+    zai endpoint create --owner alice --name echo ...                 # admins, for someone
+    zai endpoint delete <endpoint>
 
 Settings are kept in ~/.config/zai/config.json (mode 600). ZAI_HOST and
 ZAI_TOKEN override it, which is handy in CI (ZAI_GATEWAY overrides the
@@ -45,6 +46,9 @@ import urllib.parse
 import urllib.request
 
 CONFIG = os.path.join(os.path.expanduser("~"), ".config", "zai", "config.json")
+# Cloudflare's Browser Integrity Check refuses urllib's default "Python-urllib/x.y"
+# with error 1010, so every request names itself.
+USER_AGENT = f"zai-cli (Python {sys.version_info[0]}.{sys.version_info[1]}; {sys.platform})"
 
 
 class ZaiError(Exception):
@@ -108,6 +112,7 @@ def api(cfg, method, path, body=None):
         "Authorization": "token " + cfg["token"],
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "User-Agent": USER_AGENT,
     })
     try:
         with _OPENER.open(req, timeout=60) as r:
@@ -133,7 +138,8 @@ def gateway(cfg, method, path, body=None, timeout=120):
     url = _secure(os.environ.get("ZAI_GATEWAY", cfg["host"] + "/v2").rstrip("/") + path)
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json"})
+        "Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json",
+        "User-Agent": USER_AGENT})
     try:
         with _OPENER.open(req, timeout=timeout) as r:
             raw = r.read()
@@ -290,7 +296,8 @@ def cmd_endpoint(a):
     if a.action == "list":
         eps = gateway(cfg, "GET", "/endpoints" + ("?all=1" if a.all else ""))["endpoints"]
         if not eps:
-            print("No endpoints. An administrator creates them: zai endpoint create --help")
+            print("No endpoints. Create one (zai endpoint create --help) if an administrator has allowed you to,\n"
+                  "or ask an administrator to create it.")
             return
         print(f"{'ID':<14} {'NAME':<20} {'OWNER':<16} {'SIZE':<16} {'TEMPLATE':<10} WORKERS")
         for e in eps:
@@ -369,7 +376,7 @@ class WebSocket:
         key = base64.b64encode(os.urandom(16)).decode()
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         lines = [f"GET {path} HTTP/1.1", f"Host: {u.netloc}", "Upgrade: websocket", "Connection: Upgrade",
-                 f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13"]
+                 f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", f"User-Agent: {USER_AGENT}"]
         lines += [f"{k}: {v}" for k, v in headers.items()]
         sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         buf = b""
@@ -525,7 +532,8 @@ def main(argv=None):
     s.add_argument("action", choices=["list", "create", "delete"])
     s.add_argument("id", nargs="?", help="endpoint id (delete)")
     s.add_argument("--all", action="store_true", help="list: everyone's (admins)")
-    s.add_argument("--owner", help="create: the user whose credit and home volume it uses")
+    s.add_argument("--owner", help="create: the user whose credit and home volume it uses (default: you; "
+                   "someone else: admins only)")
     s.add_argument("--name")
     s.add_argument("--size", default="cpu", help="create: a size slug (zai sizes)")
     s.add_argument("--template", default="pytorch")

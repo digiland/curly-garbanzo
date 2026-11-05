@@ -157,6 +157,9 @@ class Catalog:
         sv = d.get("serverless") or {}
         self.enabled = bool(sv.get("enabled", False))
         self.max_workers = int(sv.get("max_workers_per_endpoint", 3))
+        # Members of this hub group create and delete their own endpoints.
+        self.creators_group = str(sv.get("creators_group") or "")
+        self.max_endpoints = int(sv.get("max_endpoints_per_user", 3))
         self.sizes = {s["slug"]: s for s in d.get("sizes") or []}
         self.templates = {t["slug"]: t for t in d.get("templates") or []}
 
@@ -309,7 +312,8 @@ class Hub:
         # or app receives for its visitors do not -- else alice, sharing her
         # server with bob, could call bob's endpoints with his token.
         model = {"name": u["name"], "admin": bool(u.get("admin")),
-                 "serverless": INVOKE_SCOPE in (u.get("scopes") or [])}
+                 "serverless": INVOKE_SCOPE in (u.get("scopes") or []),
+                 "groups": [g for g in (u.get("groups") or []) if isinstance(g, str)]}
         if len(self._auth) > 10000:
             self._auth.clear()
         self._auth[key] = (now + AUTH_CACHE, model)
@@ -886,7 +890,19 @@ class Base(web.RequestHandler):
         name = self.request.headers.get("X-Zai-User", "")
         if not USER_RE.match(name):
             raise web.HTTPError(400, reason="bad X-Zai-User")
-        return {"name": name, "admin": self.request.headers.get("X-Zai-Admin") == "1"}
+        try:
+            groups = json.loads(self.request.headers.get("X-Zai-Groups") or "[]")
+        except ValueError:
+            raise web.HTTPError(400, reason="bad X-Zai-Groups")
+        if not isinstance(groups, list):
+            raise web.HTTPError(400, reason="bad X-Zai-Groups")
+        return {"name": name, "admin": self.request.headers.get("X-Zai-Admin") == "1",
+                "groups": [g for g in groups if isinstance(g, str)]}
+
+    def can_create(self, u):
+        """Administrators, and members of the catalog's creators group (their own endpoints only)."""
+        g = self.gw.catalog.creators_group
+        return u["admin"] or bool(g and g in u.get("groups", ()))
 
     async def endpoint(self, ep_id):
         u = await self.user()
@@ -918,16 +934,32 @@ class EndpointsHandler(Base):
 
     async def post(self):
         u = await self.user()
-        if not u["admin"]:
-            raise web.HTTPError(403, reason="only administrators create endpoints for now")
+        if not self.can_create(u):
+            g = self.gw.catalog.creators_group
+            raise web.HTTPError(403, reason="ask an administrator to create the endpoint, or to add you to the "
+                                            f"{g} group so you can create your own" if g else
+                                            "only administrators create endpoints")
         if not self.gw.catalog.enabled:
             raise web.HTTPError(403, reason="serverless is disabled in the catalog")
+        body = self.body_json()
+        if isinstance(body, dict) and body.get("owner") is None:
+            body["owner"] = u["name"]       # no owner given: your own endpoint
         try:
-            e = self.gw.validate_endpoint(self.body_json())
+            e = self.gw.validate_endpoint(body)
         except ValueError as ex:
             raise web.HTTPError(400, reason=str(ex))
+        if not u["admin"]:
+            # Group members spend only their own credit, in their own home.
+            if e["owner"] != u["name"]:
+                raise web.HTTPError(403, reason="you can create endpoints only for yourself")
         if not await self.gw.k8s.home_pvc(e["owner"]):
             raise web.HTTPError(400, reason=f"{e['owner']} has no home volume yet: they must start a server once")
+        if not u["admin"]:
+            # Counted after the last await, so two requests at once cannot both pass.
+            have = self.gw.db.one("SELECT COUNT(*) FROM endpoints WHERE owner=? AND deleted IS NULL",
+                                  (u["name"],))[0]
+            if have >= self.gw.catalog.max_endpoints:
+                raise web.HTTPError(403, reason=f"you have {have} endpoints, the most allowed; delete one first")
         ep_id = _rand(12)
         self.gw.db.x("INSERT INTO endpoints(id, owner, name, size, template, workdir, command, env, max_workers,"
                      " idle_timeout, exec_timeout, created, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -941,8 +973,9 @@ class EndpointsHandler(Base):
 class EndpointHandler(Base):
     async def delete(self, ep_id):
         u, ep = await self.endpoint(ep_id)
-        if not u["admin"]:
-            raise web.HTTPError(403, reason="only administrators delete endpoints for now")
+        # self.endpoint() already 404s anyone who is neither the owner nor an admin.
+        if not (u["admin"] or self.can_create(u)):
+            raise web.HTTPError(403, reason="ask an administrator to delete the endpoint")
         self.gw.db.x("UPDATE endpoints SET deleted=? WHERE id=?", (time.time(), ep_id))
         for j in self.gw.db.q("SELECT id FROM jobs WHERE endpoint=? AND status IN ('IN_QUEUE','IN_PROGRESS')",
                               (ep_id,)):

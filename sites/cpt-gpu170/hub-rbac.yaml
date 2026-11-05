@@ -1,0 +1,27 @@
+# Lets the hub read node allocatable, so the spawn page can show how many MIG
+# slices each pool has (03-gpu-capacity in values.yaml). Read-only, nodes only:
+# the chart's own Role already covers pods in the jupyterhub namespace.
+# Without this the capacity lookup fails and the page falls back to the plain
+# profile list -- nothing breaks, users just lose the "N of M free" hint.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jupyterhub-hub-node-reader
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jupyterhub-hub-node-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jupyterhub-hub-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: hub
+    namespace: jupyterhub

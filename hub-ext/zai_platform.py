@@ -92,6 +92,9 @@ class Catalog:
         # burst of jobs from locking notebook users out of the GPU.
         self.sv_max_gpus = int(sv.get("max_gpus", 2))
         self.sv_max_workers = int(sv.get("max_workers_per_endpoint", 3))
+        # Members of this group create their own endpoints; "" = admins only.
+        self.sv_creators_group = str(sv.get("creators_group") or "")
+        self.sv_max_endpoints = int(sv.get("max_endpoints_per_user", 3))
 
         self.templates = []
         for t in data.get("templates") or []:
@@ -666,7 +669,8 @@ async def gateway(user, method, path, body=None):
         GATEWAY_URL + path, method=method, request_timeout=15,
         body=json.dumps(body) if body is not None else (b"" if method == "POST" else None),
         headers={"Authorization": f"token {GATEWAY_TOKEN}", "X-Zai-User": user.name,
-                 "X-Zai-Admin": "1" if user.admin else "0", "Content-Type": "application/json"})
+                 "X-Zai-Admin": "1" if user.admin else "0",
+                 "X-Zai-Groups": json.dumps([g.name for g in user.groups]), "Content-Type": "application/json"})
     try:
         r = await AsyncHTTPClient().fetch(req, raise_error=False)
     except Exception:
@@ -699,10 +703,18 @@ def _endpoint_spend(con, ids, since, now):
     return out
 
 
+def can_create_endpoints(user):
+    """Admins, and members of the catalog's creators group (for themselves).
+    The gateway checks the same again."""
+    g = CATALOG.sv_creators_group
+    return user.admin or bool(g and any(x.name == g for x in user.groups))
+
+
 class EndpointsPage(BaseHandler):
     """GET/POST /hub/endpoints -- serverless endpoints: how to call them, their
     queue, workers and recent jobs. Owners send test jobs and cancel; admins
-    see everyone's and create and delete."""
+    see everyone's and create and delete; members of the creators group create
+    and delete their own."""
 
     _form = {}      # a create form that failed, to refill it
 
@@ -730,7 +742,7 @@ class EndpointsPage(BaseHandler):
             "endpoints.html", endpoints=endpoints, unavailable=unavailable, spend=spend,
             message=message, error=error, catalog=CATALOG, money=CATALOG.money, rate_str=CATALOG.rate_str,
             size_name=_size_name, public_host=self.request.host, users=users, now_ms=int(now * 1000),
-            form=self._form)
+            form=self._form, can_create=can_create_endpoints(user))
         self.finish(html)
 
     @web.authenticated
@@ -759,17 +771,19 @@ class EndpointsPage(BaseHandler):
                 r = await gateway(user, "POST", f"/v2/{ep}/purge-queue")
                 msg = f"Removed {r.get('removed', 0)} queued job(s)."
             elif action == "create":
-                if not user.admin:
-                    raise web.HTTPError(403, "Administrators only")
+                if not can_create_endpoints(user):
+                    raise web.HTTPError(403, "Ask an administrator to create the endpoint")
                 self._form = {k: self.get_body_argument(k, "") for k in (
                     "owner", "name", "size", "template", "workdir", "command",
                     "max_workers", "idle_timeout", "execution_timeout", "env")}
+                if not user.admin:
+                    self._form["owner"] = user.name     # their own; the form has no owner field
                 r = await gateway(user, "POST", "/v2/endpoints", self._create_body(self._form))
                 self._form = {}
                 msg = f"Created {r['name']} ({r['id']}) for {r['owner']}."
             elif action == "delete":
-                if not user.admin:
-                    raise web.HTTPError(403, "Administrators only")
+                if not can_create_endpoints(user):     # the gateway also checks it is theirs
+                    raise web.HTTPError(403, "Ask an administrator to delete the endpoint")
                 await gateway(user, "DELETE", f"/v2/endpoints/{ep}")
                 msg = f"Deleted endpoint {ep}. Its queued and running jobs were cancelled."
             else:

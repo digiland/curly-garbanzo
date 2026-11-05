@@ -53,7 +53,7 @@ runpod.serverless.start({"handler": handler})</div>
     <h2 style="margin-bottom:1.25rem">How it will work</h2>
     <div class="z-how-grid">
       <div><div><b>Write a handler</b><span>A folder in your home with a <code>handler.py</code>. RunPod handlers work as they are.</span></div></div>
-      <div><div><b>Pick a GPU size</b><span>An administrator creates the endpoint on the size you choose.</span></div></div>
+      <div><div><b>Pick a GPU size</b><span>{% if can_create %}Create the endpoint below on the size you choose.{% else %}An administrator creates the endpoint on the size you choose.{% endif %}</span></div></div>
       <div><div><b>Send jobs</b><span>POST to <code>/v2/&lt;endpoint&gt;/run</code> with your token. Workers start on demand.</span></div></div>
       <div><div><b>Pay per second</b><span>At the size's hourly price while a worker runs, cold start included.</span></div></div>
     </div>
@@ -66,8 +66,8 @@ runpod.serverless.start({"handler": handler})</div>
   <section class="z-card">
     <h2>No endpoints yet</h2>
     <p class="z-empty" style="text-align:left">An endpoint is a folder in your home with a <code>handler.py</code>, run on the GPU size you choose.
-      Write and test the handler in your server, then ask an administrator to create the endpoint
-      {%- if user.admin %} (below){% endif %}.</p>
+      Write and test the handler in your server, then
+      {%- if can_create %} create the endpoint below{% else %} ask an administrator to create the endpoint{% endif %}.</p>
     <div class="z-pre">import zai_serverless as runpod     # or: import runpod
 
 def handler(job):
@@ -182,7 +182,7 @@ print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-cop
           <button type="submit" class="z-btn is-quiet is-sm">Remove {{ h.jobs.inQueue }} queued job{{ 's' if h.jobs.inQueue != 1 }}</button>
         </form>
         {% endif %}
-        {% if user.admin %}
+        {% if user.admin or (can_create and e.owner == user.name) %}
         <form method="post" action="{{ base_url }}endpoints" data-confirm="Delete {{ e.name }}? Queued and running jobs are cancelled. The handler files are kept.">
           <input type="hidden" name="_xsrf" value="{{ xsrf }}">
           <input type="hidden" name="action" value="delete">
@@ -195,19 +195,25 @@ print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-cop
   </section>
   {% endfor %}
 
-  {% if user.admin and not unavailable %}
+  {% if can_create and not unavailable %}
   <section class="z-card" id="create">
     <h2>Create an endpoint</h2>
+    {% if user.admin %}
     <p class="z-ep-small" style="margin-top:0">For a customer, in their home. They must have started a server once, so that their home volume exists. Their credit pays for the workers.</p>
+    {% else %}
+    <p class="z-ep-small" style="margin-top:0">In your home, paid from your credit while a worker runs. Up to {{ catalog.sv_max_endpoints }} endpoints; delete one to make room.</p>
+    {% endif %}
     <form method="post" action="{{ base_url }}endpoints#create" class="z-topup">
       <input type="hidden" name="_xsrf" value="{{ xsrf }}">
       <input type="hidden" name="action" value="create">
+      {% if user.admin %}
       <div class="z-field">
         <label for="c-owner">Owner</label>
         <select id="c-owner" name="owner" class="z-input" required>
           {% for u in users %}<option {% if u == form.get('owner') %}selected{% endif %}>{{ u }}</option>{% endfor %}
         </select>
       </div>
+      {% endif %}
       <div class="z-field">
         <label for="c-name">Name</label>
         <input id="c-name" name="name" class="z-input" maxlength="63" placeholder="whisper" value="{{ form.get('name', '') }}" required>
@@ -225,7 +231,7 @@ print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-cop
         </select>
       </div>
       <div class="z-field">
-        <label for="c-dir">Folder in their home</label>
+        <label for="c-dir">Folder in {{ "their" if user.admin else "your" }} home</label>
         <input id="c-dir" name="workdir" class="z-input" maxlength="200" placeholder="endpoints/whisper" value="{{ form.get('workdir', '') }}" required>
       </div>
       <div class="z-field">
