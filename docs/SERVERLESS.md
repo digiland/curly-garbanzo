@@ -51,6 +51,19 @@ zai endpoint create --owner alice --name echo --size gpu-18 --template pytorch \
     --dir endpoints/echo --max-workers 1 --idle-timeout 60
 ```
 
+**Customers who create their own.** Members of the JupyterHub group named by
+`serverless.creators_group` in `hub-ext/catalog.yaml` (default
+`endpoint-creators`) create and delete their own endpoints, on the Endpoints
+page or with `zai endpoint create` without `--owner`. An administrator grants
+it at `/hub/admin` → Groups: create the group once, then add the user. Members
+can create endpoints only for themselves (their home, their credit), at most
+`serverless.max_endpoints_per_user` at a time. `max_workers_per_endpoint` and
+`max_gpus` apply as for any endpoint. Removing someone from the group stops
+new creates within a minute (the gateway caches token checks for 60 s). Their
+existing endpoints keep running until deleted. An API token made with only the
+`custom:serverless` scope does not show the user's groups, so creating
+through the API needs a token with the default scopes.
+
 **The Endpoints page** (`/hub/endpoints`, in the nav) shows each endpoint's
 URL with copyable curl and Python examples, its queue, workers, spend this
 month and recent jobs (metadata only, never inputs or outputs). Owners can

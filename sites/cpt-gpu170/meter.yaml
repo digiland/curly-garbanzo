@@ -1,0 +1,156 @@
+# Usage meter (sites/cpt-gpu170/meter/meter.py). Applied by deploy.sh, which
+# first creates:
+#   Secret    zai-meter          token the hub presents (random, created once)
+#   ConfigMap zai-meter-app      meter.py
+#   ConfigMap zai-meter-config   config.json (rates, timezone, default budget)
+#
+# Runs on the hub image: stdlib Python only, so there is nothing to build.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zai-meter
+  namespace: jupyterhub
+---
+# Read pods in this namespace, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zai-meter
+  namespace: jupyterhub
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zai-meter
+  namespace: jupyterhub
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zai-meter
+subjects:
+  - kind: ServiceAccount
+    name: zai-meter
+    namespace: jupyterhub
+---
+# The ledger. WEKA-backed like everything else here; 5 Gi is years of minutes
+# for this node (28 slices x 525,600 minutes a year is ~15M rows, ~1.5 GB).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zai-meter-data
+  namespace: jupyterhub
+  labels: {app: zai-meter}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: wekafs-dir
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zai-meter
+  namespace: jupyterhub
+  labels: {app: zai-meter}
+spec:
+  # Exactly one writer, ever: Recreate stops the old pod before the new one
+  # opens the database.
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: zai-meter}
+  template:
+    metadata:
+      labels: {app: zai-meter}
+    spec:
+      serviceAccountName: zai-meter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: meter
+          image: local/k8s-hub-native:4.4.2
+          imagePullPolicy: Never
+          command: [python3, /app/meter.py]
+          env:
+            - name: METER_TOKEN
+              valueFrom: {secretKeyRef: {name: zai-meter, key: token}}
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          ports:
+            - {name: http, containerPort: 8000}
+          # Liveness only asks "is the process answering". Readiness also asks
+          # "is a sample less than 2 minutes old", so a meter that cannot reach
+          # the API shows as not-ready (verify.sh flags it) without being
+          # restarted into a loop.
+          livenessProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 30
+            failureThreshold: 4
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 2
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: app, mountPath: /app, readOnly: true}
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: app
+          configMap: {name: zai-meter-app}
+        - name: config
+          configMap: {name: zai-meter-config}
+        - name: data
+          persistentVolumeClaim: {claimName: zai-meter-data}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zai-meter
+  namespace: jupyterhub
+  labels: {app: zai-meter}
+spec:
+  selector: {app: zai-meter}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+# Only the hub may talk to the meter. Notebooks are already barred from
+# 10.0.0.0/8 by their own egress policy; this is the second lock. Egress is
+# left open: the meter needs the Kubernetes API and the DCGM exporter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zai-meter
+  namespace: jupyterhub
+spec:
+  podSelector:
+    matchLabels: {app: zai-meter}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: jupyterhub, component: hub}
+      ports:
+        - {port: 8000, protocol: TCP}

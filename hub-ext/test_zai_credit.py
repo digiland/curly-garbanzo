@@ -50,6 +50,7 @@ class Case(unittest.TestCase):
         if os.path.exists(zai_platform.DB_PATH):
             os.remove(zai_platform.DB_PATH)
         zai_platform.CATALOG = zai_platform.Catalog.load()
+        zai_platform.CATALOG.signup_credit = 0   # balances below start from zero
         zai_platform.init_db()
         self.config = Config()
         self.config.JupyterHub.template_vars = {}
@@ -206,7 +207,7 @@ class View(Case):
     def test_the_hours_guide_uses_the_catalog_prices(self):
         view = zai_credit._cr_view(person("tendai"))
         self.assertEqual(view["vat_percent"], 15.5)
-        self.assertEqual([z["rate"] for z in view["sizes"]], [1.58, 2.22])   # GPU sizes, cheapest first
+        self.assertEqual([z["rate"] for z in view["sizes"]], [1.25, 1.76])   # GPU sizes, cheapest first
 
     def test_registered_for_templates_and_routes(self):
         self.assertIs(self.config.JupyterHub.template_vars["zai_credit"], zai_credit._cr_view)

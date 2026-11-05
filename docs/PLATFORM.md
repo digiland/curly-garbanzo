@@ -77,7 +77,7 @@ its GPU, running unbilled while the hub showed it as gone.
    stopped by billing.
 2. Top up every existing account at `/hub/billing`, or set `signup_credit`.
    It is granted once to each account the first time billing sees it,
-   existing accounts included.
+   existing accounts included. The shipped catalogs grant $5 (November 2026).
 3. Set `enforce: true` and run `scripts/05-jupyterhub.sh`.
 
 The shipped catalogs have `enforce: true` (since October 2026). Before
