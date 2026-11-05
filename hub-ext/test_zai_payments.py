@@ -83,6 +83,7 @@ class Case(unittest.IsolatedAsyncioTestCase):
         if os.path.exists(zai_platform.DB_PATH):
             os.remove(zai_platform.DB_PATH)
         zai_platform.CATALOG = zai_platform.Catalog.load()
+        zai_platform.CATALOG.signup_credit = 0   # balances below start from zero
         zai_platform.init_db()
         self.config = Config()
         self.config.JupyterHub.template_vars = {}
@@ -415,6 +416,7 @@ class Webhook(AsyncHTTPTestCase):
         if os.path.exists(zai_platform.DB_PATH):
             os.remove(zai_platform.DB_PATH)
         zai_platform.CATALOG = zai_platform.Catalog.load()
+        zai_platform.CATALOG.signup_credit = 0   # balances below start from zero
         zai_platform.init_db()
         zai_credit._cr_init()
         zai_payments._pay_init()

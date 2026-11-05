@@ -47,6 +47,7 @@ class Case(unittest.TestCase):
         if os.path.exists(zai_platform.DB_PATH):
             os.remove(zai_platform.DB_PATH)
         zai_platform.CATALOG = zai_platform.Catalog.load()
+        zai_platform.CATALOG.signup_credit = 0   # balances below start from zero
         zai_platform.init_db()
 
     def credit(self, micros, user="tendai"):
@@ -77,7 +78,7 @@ class StartPicker(Case):
 
     def test_cards_show_price_hardware_and_the_recommended_size(self):
         html = self.form()
-        self.assertIn("<b>$1.58</b><span>/ hour incl. VAT</span>", html)
+        self.assertIn("<b>$1.25</b><span>/ hour incl. VAT</span>", html)
         self.assertIn("<b>$0.06</b><span>/ hour incl. VAT</span>", html)
         self.assertIn("RAM<b>12 GB</b>", html)
         self.assertIn("RAM<b>24 GB</b>", html)
@@ -107,7 +108,7 @@ class StartPicker(Case):
         html = self.form()
         self.assertIn('data-balance="20000000"', html)
         self.assertIn('data-money="$20.00"', html)
-        self.assertIn('data-rate="1580000"', html)
+        self.assertIn('data-rate="1250000"', html)
         self.assertIn("z-summary", open(os.path.join(REPO, "templates", "spawn.html")).read())
 
     def test_free_admin_sees_free(self):
@@ -127,11 +128,20 @@ class AccountOverview(Case):
         return self.render("account.html", user=user, acct=acct, history=history, free={},
                            admin_free=admin_free, public_host="h", now=time.time(), two_factor=False, **extra)
 
+    def test_new_accounts_get_the_welcome_credit_once(self):
+        zai_platform.CATALOG = zai_platform.Catalog.load()      # the shipped catalog: $5
+        page = self.account()
+        self.assertIn("$5.00", page)
+        self.assertIn("Welcome credit", page)
+        with zai_platform._db() as con:
+            zai_platform.account(con, "tendai")
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM ledger WHERE kind='signup'").fetchone()[0], 1)
+
     def test_balance_in_hours_of_the_default_size(self):
         self.credit(20 * MICROS)
         page = self.account()
         self.assertIn("$20.00", page)
-        self.assertIn("About <strong>13 hours</strong> on GPU · 18 GB", page)       # $20 at $1.58
+        self.assertIn("About <strong>16 hours</strong> on GPU · 18 GB", page)       # $20 at $1.25
 
     def test_running_server_card(self):
         with zai_platform._db() as con:
@@ -179,8 +189,8 @@ class Home(Case):
         self.credit(20 * MICROS)
         page = self.page()
         self.assertIn('href="/hub/spawn#gpu-18"', page)
-        self.assertIn("<b>$1.58</b><span>/ hour incl. VAT</span>", page)
-        self.assertIn("covers about <strong>13 hours</strong>", page)
+        self.assertIn("<b>$1.25</b><span>/ hour incl. VAT</span>", page)
+        self.assertIn("covers about <strong>16 hours</strong>", page)
         self.assertIn('id="start"', page)
         self.assertNotIn('id="stop"', page)
 
