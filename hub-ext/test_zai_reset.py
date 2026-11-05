@@ -8,6 +8,7 @@ packages:
     pip install jupyterhub jupyterhub-nativeauthenticator==1.2.0 pyyaml
     cd hub-ext && python3 -m unittest -v test_zai_reset
 """
+import asyncio
 import base64
 import os
 import time
@@ -212,6 +213,67 @@ class Completing(Case):
         self.complete(link)
         with self.assertRaises(ValueError):
             self.complete(link, password="yet-another-passphrase")
+
+
+class Tokens(Case):
+    def test_a_reset_revokes_tokens_but_not_a_servers_own(self):
+        self.user()
+        user = orm.User.find(self.db, "tendai")
+        self.db.add_all([orm.OAuthClient(identifier="jupyterhub"), orm.OAuthClient(identifier="jupyterhub-user-tendai")])
+        self.db.commit()
+        kept = user.new_api_token(note="Server at /user/tendai/")
+        user.new_api_token(note="Requested via token page")
+        orm.APIToken.new(user=user, client_id="jupyterhub-user-tendai", session_id="s")
+        self.complete(self.link())
+        self.assertEqual([t.note for t in user.api_tokens], ["Server at /user/tendai/"])
+        self.assertIsNotNone(orm.APIToken.find(self.db, kept))
+
+
+class Visitor(Case):
+    def request(self, remote_ip="10.42.0.5", **headers):
+        return types.SimpleNamespace(remote_ip=remote_ip, headers=headers)
+
+    def behind_cloudflare(self):
+        zai_reset.configure(Config(), env=dict(SMTP, ZAI_CLIENT_IP_HEADER="CF-Connecting-IP"))
+
+    def test_the_named_header_identifies_the_visitor(self):
+        self.behind_cloudflare()
+        request = self.request(**{"CF-Connecting-IP": "2001:db8::1"})
+        self.assertEqual(zai_reset._rs_visitor(request), "2001:db8::1")
+
+    def test_a_missing_or_malformed_header_falls_back_to_remote_ip(self):
+        self.behind_cloudflare()
+        self.assertEqual(zai_reset._rs_visitor(self.request()), "10.42.0.5")
+        self.assertEqual(zai_reset._rs_visitor(self.request(**{"CF-Connecting-IP": "not an ip"})), "10.42.0.5")
+
+    def test_the_header_is_ignored_unless_configured(self):
+        request = self.request(**{"CF-Connecting-IP": "203.0.113.9"})
+        self.assertEqual(zai_reset._rs_visitor(request), "10.42.0.5")
+
+    def test_the_chart_names_cloudflares_header(self):
+        self.assertEqual(VALUES["hub"]["extraEnv"]["ZAI_CLIENT_IP_HEADER"], "CF-Connecting-IP")
+
+
+class Form(Case):
+    def test_spaces_in_a_new_password_are_kept(self):
+        info = self.user()
+        typed = "  " + NEW + " "
+        form = {"password": typed, "confirm": typed, "code": ""}
+
+        async def page(*a, **kw):
+            pass
+
+        async def no_email(*a):
+            pass
+
+        handler = types.SimpleNamespace(
+            db=self.db, authenticator=self.auth, _page=page, clear_login_cookie=lambda: None,
+            get_body_argument=lambda name, default=None, strip=True:
+                form[name].strip() if strip else form[name])
+        zai_reset._RS["sender"] = no_email
+        asyncio.run(zai_reset.ResetHandler.post(handler, self.link()))
+        self.assertTrue(info.is_valid_password(typed))
+        self.assertFalse(info.is_valid_password(NEW))
 
 
 class TwoFactor(Case):

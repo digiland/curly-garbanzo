@@ -20,7 +20,10 @@ administrators still can. The code is `hub-ext/zai_reset.py`, loaded after
    12 characters, not a common password) and, **if they use two-factor
    sign-in, a current authenticator code**.
 5. **Password changed.** The old password stops working, every device that
-   was signed in is signed out, and a lockout from failed sign-ins is lifted.
+   was signed in is signed out, API tokens and notebook sign-ins are revoked,
+   and a lockout from failed sign-ins is lifted. Anything using a token, such
+   as the `zai` command or calls to serverless endpoints, needs a new one from
+   the Token page. Running servers keep running, with their own tokens.
    A second email, "Your ZAI Compute password was changed", tells them, so a
    change they didn't make doesn't go unnoticed.
 
@@ -38,7 +41,7 @@ administrator, as before.
 | Link lifetime | 30 minutes, one use. A newer link cancels the older one |
 | Who gets a link | Approved accounts whose email matches, ignoring capitals and spaces. Applicants waiting for approval get nothing |
 | Links per email address | 3 an hour |
-| Requests per visitor | 20 an hour |
+| Requests per visitor | 20 an hour, counted by `ZAI_CLIENT_IP_HEADER` (the chart sets `CF-Connecting-IP`) |
 | Wrong authenticator codes | 5 on one link, then the link stops working |
 | New password | The signup rules: at least 12 characters, not a common password |
 
@@ -75,6 +78,13 @@ or `password reset is OFF: <reason>`.
   request could otherwise make the email point to another site.
 - **Two-factor still counts.** A stolen mailbox alone cannot take over an
   account that has two-factor on.
+- **A reset locks out stolen credentials.** Browser sessions, API tokens and
+  notebook sign-ins all stop working. The serverless gateway remembers a
+  checked token briefly, so one may work for a short while after.
+- **The visitor limit trusts one header.** Behind a proxy the hub sees only the
+  proxy's address, so `ZAI_CLIENT_IP_HEADER` names the header holding the
+  visitor's. Clear it on a site not behind Cloudflare, where a client could
+  forge that header; the limit per email address does not depend on it.
 - **Mail goes out encrypted** (`starttls` or `ssl`). Plain text is allowed
   only to a mail server on the same machine, for testing.
 
@@ -91,6 +101,7 @@ or `password reset is OFF: <reason>`.
 |---|---|
 | No "Reset it by email" on the sign-in page | `password reset is OFF` in the hub log, with the reason |
 | The user never gets the email | `password reset: email could not be sent` in the log: wrong SMTP settings or password, or the from-address is not allowed to send. Also check spam |
+| `zai` or a serverless call answers 401 after a reset | The reset revoked the token. Make a new one on the Token page |
 | "This link no longer works" | Older than 30 minutes, already used, replaced by a newer link, or 5 wrong authenticator codes |
 | No "link sent" line in the log for a request | No approved account has that address, or a limit was reached |
 

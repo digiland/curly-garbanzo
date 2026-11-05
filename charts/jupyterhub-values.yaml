@@ -129,6 +129,8 @@ hub:
     # Optional: self-service password reset by email (hub-ext/zai_reset.py,
     # docs/PASSWORD-RESET.md). Sends through RESEND_API_KEY above or SMTP_HOST;
     # off without a sender, a from-address and the site's public address.
+    # The tunnel is the only way in, so Cloudflare's header can be trusted.
+    ZAI_CLIENT_IP_HEADER: CF-Connecting-IP
     ZAI_PUBLIC_URL:
       valueFrom:
         secretKeyRef: {name: outgoing-mail, key: public-url, optional: true}

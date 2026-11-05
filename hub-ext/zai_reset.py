@@ -5,7 +5,8 @@ emails a one-time link to /hub/reset/<link>. The link works once, for 30
 minutes; there the user sets a new password (the signup rules apply) and, if
 they use two-factor sign-in, enters a current authenticator code. Changing
 the password signs every other device out (the user's cookie_id is renewed),
-clears the sign-in lockout, and sends a "your password was changed" email.
+revokes their API tokens and notebook sign-ins, clears the sign-in lockout, and
+sends a "your password was changed" email.
 See docs/PASSWORD-RESET.md. Loaded by charts/jupyterhub-values.yaml,
 03-zai-platform, after zai_2fa (whose code check it uses).
 
@@ -22,6 +23,7 @@ link nor a password is ever logged.
 """
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -49,7 +51,7 @@ _RS_PER_IP = 20                     # requests per visitor per hour (an office m
 _RS_CODE_TRIES = 5                  # wrong authenticator codes before a link dies
 _RS_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}\.[^@\s.]{2,}$")
 
-_RS = {"on": False, "public": "", "from": "", "sender": None, "smtp": {}, "resend": ""}
+_RS = {"on": False, "public": "", "from": "", "sender": None, "smtp": {}, "resend": "", "ip_header": ""}
 _rs_recent = {}                     # rate-limit key -> [request times]
 
 _rs_table = sa.Table(
@@ -83,6 +85,18 @@ def _rs_allowed(key, limit, now):
         return False
     _rs_recent[key] = times + [now]
     return True
+
+
+def _rs_visitor(request):
+    """The address the per-visitor limit counts. Behind a proxy remote_ip is the
+    proxy's (every visitor would share one limit) or whatever X-Real-IP claims,
+    so the header named by ZAI_CLIENT_IP_HEADER wins. Name one only if the proxy
+    in front sets it itself, as Cloudflare does CF-Connecting-IP."""
+    claimed = request.headers.get(_RS["ip_header"], "").strip() if _RS["ip_header"] else ""
+    try:
+        return str(ipaddress.ip_address(claimed))
+    except ValueError:
+        return request.remote_ip or ""
 
 
 # ---------------------------------------------------------------------------
@@ -172,10 +186,15 @@ def _rs_complete(db, authenticator, link, password, confirm, code, now=None):
     db.commit()
     if not authenticator.change_password(username, password):
         raise ValueError("The password could not be changed. Ask for a new link.")
-    # Sign every device out, and lift any lockout from failed sign-ins.
+    # Sign every device out, and lift any lockout from failed sign-ins. API
+    # tokens and notebook sign-ins go too, or a stolen one outlives the reset;
+    # not a server's own token, which it needs to keep talking to the hub.
     user = orm.User.find(db, username)
     if user is not None:
         user.cookie_id = new_token()
+        for token in list(user.api_tokens):
+            if not (token.note or "").startswith("Server at "):
+                db.delete(token)
         db.commit()
     authenticator.successful_login(username)
     get_logger().info("password reset: %s changed their password", username)
@@ -200,9 +219,10 @@ def _rs_changed_email(username, when):
     stamp = time.strftime("%d %b %Y %H:%M UTC", time.gmtime(when))
     return ("Your ZAI Compute password was changed",
             f"Hello {username},\n\n"
-            f"The password for your ZAI Compute account was changed on {stamp}, and every device "
-            "that was signed in has been signed out.\n\n"
-            "If you did this, there is nothing more to do. Your Caimex password has not changed.\n\n"
+            f"The password for your ZAI Compute account was changed on {stamp}, every device "
+            "that was signed in has been signed out, and your API tokens have been revoked.\n\n"
+            "If you did this, make new tokens for anything that uses one, such as the zai command "
+            "or serverless endpoints. Your Caimex password has not changed.\n\n"
             "If you didn't, contact ZAI support straight away.\n\n"
             "ZAI Compute\n")
 
@@ -262,7 +282,7 @@ class ForgotHandler(BaseHandler):
         if not _RS["on"]:
             return self.redirect(self.hub.base_url + "login")
         email = self.get_body_argument("email", "")[:320]
-        for username, to, link in _rs_request(self.db, email, self.request.remote_ip or ""):
+        for username, to, link in _rs_request(self.db, email, _rs_visitor(self.request)):
             subject, text = _rs_reset_email(username, link)
             asyncio.ensure_future(_rs_send(to, subject, text))
         # The same page whether or not the address has an account.
@@ -289,7 +309,9 @@ class ResetHandler(BaseHandler):
             return self.redirect(self.hub.base_url + "login")
         try:
             username = _rs_complete(self.db, self.authenticator, link,
-                                    self.get_body_argument("password", ""), self.get_body_argument("confirm", ""),
+                                    # Not stripped: sign-in does not strip what it is given.
+                                    self.get_body_argument("password", "", strip=False),
+                                    self.get_body_argument("confirm", "", strip=False),
                                     self.get_body_argument("code", ""))
         except ValueError as e:
             return await self._page(link, _rs_find(self.db, link), error=str(e))
@@ -339,7 +361,7 @@ def configure(c, env=os.environ):
         port = int(env.get("SMTP_PORT") or (465 if security == "ssl" else 587))
     except ValueError:
         port = 587
-    _RS.update(on=False, public=public, sender=None)
+    _RS.update(on=False, public=public, sender=None, ip_header=(env.get("ZAI_CLIENT_IP_HEADER") or "").strip())
     why = ""
     if not public:
         why = "ZAI_PUBLIC_URL is not set or not https"
