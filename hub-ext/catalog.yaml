@@ -43,37 +43,39 @@ billing:
 # minutes. A size draws from the pool named like its gpu.resource, or from
 # gpu.pool when set (see catalog.cluster.yaml for why that exists).
 #
-# This is the 7 x 1g.18gb layout with the device plugin's migStrategy=single,
-# where every slice is plain `nvidia.com/gpu`. For a mixed layout see
-# scripts/11-gpu-layout.sh, which prints the block to paste here.
+# This is the 1 x 3g.71gb + 2 x 2g.35gb layout (scripts/11-gpu-layout.sh
+# "3g.71gb 2g.35gb*2"), with the device plugin's migStrategy=mixed, where each
+# slice size is its own resource. 11-gpu-layout.sh prints the block to paste here.
 gpu_pools:
-  nvidia.com/gpu: 7
+  nvidia.com/mig-3g.71gb: 1
+  nvidia.com/mig-2g.35gb: 2
 # What the start page calls each pool ("H200 slices free: 5 of 7"). Optional;
 # a pool not named here is called "GPU slices".
 gpu_pool_labels:
-  nvidia.com/gpu: "H200 slices"
+  nvidia.com/mig-3g.71gb: "H200 71 GB slices"
+  nvidia.com/mig-2g.35gb: "H200 35 GB slices"
 
 sizes:
-  - slug: gpu-18
-    name: "GPU · 18 GB"
-    description: "One H200 MIG slice. 12 GB RAM, 2 CPU. Notebooks, fine-tuning small models, 7B inference in 4-bit."
-    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 18}
-    cpu: 2
-    cpu_guarantee: 0.5
-    memory: 12G
-    memory_guarantee: 1G
-    price_per_hour: 1.25         # $1.08 before VAT, the price sheet's vGPU slice
-    default: true
-
-  - slug: gpu-18-highmem
-    name: "GPU · 18 GB, high memory"
-    description: "Same slice with 24 GB RAM and 4 CPU, for datasets held in host memory."
-    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 18}
+  - slug: gpu-35
+    name: "GPU · 35 GB"
+    description: "A 2g H200 MIG slice. 24 GB RAM, 4 CPU. Fine-tuning and 7-14B inference."
+    gpu: {resource: nvidia.com/mig-2g.35gb, count: 1, vram_gb: 35}
     cpu: 4
     cpu_guarantee: 1
     memory: 24G
     memory_guarantee: 2G
-    price_per_hour: 1.76         # the 18 GB slice x 0.69/0.49, the old ratio ($1.52 before VAT)
+    price_per_hour: 2.50         # two 18 GB slice prices ($2.16 before VAT)
+    default: true
+
+  - slug: gpu-71
+    name: "GPU · 71 GB"
+    description: "A 3g H200 MIG slice. 48 GB RAM, 8 CPU. Larger fine-tunes, 30B+ inference."
+    gpu: {resource: nvidia.com/mig-3g.71gb, count: 1, vram_gb: 71}
+    cpu: 8
+    cpu_guarantee: 2
+    memory: 48G
+    memory_guarantee: 4G
+    price_per_hour: 3.75         # three 18 GB slice prices ($3.25 before VAT)
 
   - slug: cpu
     name: "CPU only"
@@ -113,7 +115,7 @@ sizes:
 serverless:
   enabled: true
   # GPUs all serverless workers together may hold. The rest stay for notebooks.
-  max_gpus: 2
+  max_gpus: 1
   max_workers_per_endpoint: 3
   # Members of this JupyterHub group create and delete their own endpoints
   # (owner: themselves) without an administrator. Add people at /hub/admin ->

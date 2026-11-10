@@ -207,7 +207,7 @@ class View(Case):
     def test_the_hours_guide_uses_the_catalog_prices(self):
         view = zai_credit._cr_view(person("tendai"))
         self.assertEqual(view["vat_percent"], 15.5)
-        self.assertEqual([z["rate"] for z in view["sizes"]], [1.25, 1.76])   # GPU sizes, cheapest first
+        self.assertEqual([z["rate"] for z in view["sizes"]], [2.50, 3.75])   # GPU sizes, cheapest first
 
     def test_registered_for_templates_and_routes(self):
         self.assertIs(self.config.JupyterHub.template_vars["zai_credit"], zai_credit._cr_view)
