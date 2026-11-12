@@ -23,6 +23,7 @@ import yaml
 from jinja2 import DictLoader, Environment
 from jupyterhub import orm
 from nativeauthenticator import NativeAuthenticator
+from nativeauthenticator.handlers import ChangePasswordHandler
 from nativeauthenticator.orm import UserInfo
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -46,6 +47,7 @@ SERVICE = {"email": "svc@zai.example", "password": "service-password-1"}
 # test's patches never stack on another's.
 _AUTHENTICATE = NativeAuthenticator.authenticate
 _GET_HANDLERS = NativeAuthenticator.get_handlers
+_CHANGE_POST = ChangePasswordHandler.post
 
 
 def template(name):
@@ -86,6 +88,22 @@ class FakeCaimex:
                     return self.finish({"access_token": None, "mfa_required": True,
                                         "mfa_token": "mfa-token"})
                 self.finish({"access_token": "login-token:" + b["email"], "user": {}})
+
+        class ChangePassword(web.RequestHandler):
+            def post(self):
+                token = self.request.headers.get("Authorization", "")
+                email = token.split("login-token:", 1)[1] if "login-token:" in token else None
+                account = fake.accounts.get(email)
+                if account is None:
+                    self.set_status(401)
+                    return self.finish({"detail": "Invalid or expired token"})
+                b = json.loads(self.request.body)
+                fake.calls.append(("change-password", email))
+                if account["password"] != b["current_password"]:
+                    self.set_status(401)
+                    return self.finish({"detail": "Current password is incorrect"})
+                account["password"] = b["new_password"]
+                self.finish({"email": email})
 
         class Invite(web.RequestHandler):
             def post(self, org):
@@ -159,6 +177,7 @@ class FakeCaimex:
 
         self.app = web.Application([
             (r"/api/auth/login", Login), (r"/api/auth/register", Register),
+            (r"/api/auth/change-password", ChangePassword),
             (r"/api/organizations/([^/]+)/invitations", Invite),
             (r"/api/organizations/([^/]+)/members", Members),
             (r"/api/organizations/([^/]+)/members/([^/]+)/entitlements", Entitlements)])
@@ -174,16 +193,24 @@ class FakeCaimex:
 class FakeHandler:
     """Just enough of a JupyterHub handler to call OpenCaimex.get on."""
 
-    def __init__(self, name, db, args=None):
+    def __init__(self, name, db, args=None, body=None, authenticator=None):
         self.current_user = types.SimpleNamespace(name=name)
         self.db = db
         self.hub = types.SimpleNamespace(base_url="/hub/")
         self.args = args or {}
+        self.body_args = body or {}
+        self.authenticator = authenticator
         self.headers, self.redirected_to, self.body = {}, None, None
         self.rendered, self.cookie_cleared = None, False
 
     def get_argument(self, name, default=None):
         return self.args.get(name, default)
+
+    def get_body_argument(self, name, default=None, strip=True):
+        return self.body_args.get(name, default)
+
+    async def get_current_user(self):
+        return self.current_user
 
     def set_header(self, key, value):
         self.headers[key] = value
@@ -235,6 +262,7 @@ class CaimexCase(unittest.IsolatedAsyncioTestCase):
 
         NativeAuthenticator.authenticate = _AUTHENTICATE
         NativeAuthenticator.get_handlers = _GET_HANDLERS
+        ChangePasswordHandler.post = _CHANGE_POST
         engine = create_engine("sqlite://")
         orm.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -262,6 +290,7 @@ class CaimexCase(unittest.IsolatedAsyncioTestCase):
                 os.environ[key] = value
         NativeAuthenticator.authenticate = _AUTHENTICATE
         NativeAuthenticator.get_handlers = _GET_HANDLERS
+        ChangePasswordHandler.post = _CHANGE_POST
 
     # -- helpers ----------------------------------------------------------
     def add_user(self, name, password, email=None, approved=True, two_factor=False):
@@ -293,6 +322,15 @@ class CaimexCase(unittest.IsolatedAsyncioTestCase):
     async def open_caimex(self, name, **args):
         handler = FakeHandler(name, self.db, args)
         await self.ns["OpenCaimex"].get(handler)
+        return handler
+
+    async def change_password(self, name, old, new, confirm=None):
+        """The Change password page, as NativeAuthenticator runs it."""
+        handler = FakeHandler(name, self.db, body={
+            "old_password": old, "new_password": new,
+            "new_password_confirmation": new if confirm is None else confirm}, authenticator=self.auth)
+        await ChangePasswordHandler.post(handler)
+        await self.settle()
         return handler
 
     def what(self):
@@ -353,8 +391,10 @@ class ExistingCaimexAccounts(CaimexCase):
         await self.sign_in("bob", "bob-password-123")
         await self.sign_in("bob", "bob-password-123")
         self.assertEqual(self.caimex.calls, [])
-        self.assertEqual((await self.open_caimex("bob")).redirected_to,
-                         "https://caimex.test/org/org-1/overview")
+        handler = await self.open_caimex("bob")
+        self.assertIsNone(handler.forward_url)
+        self.assertEqual(handler.rendered[1]["differs"], True)
+        self.assertEqual(handler.rendered[1]["again_url"], "/hub/caimex/again?reconnect=1")
 
     async def test_member_with_the_same_password_gets_one_click(self):
         self.add_user("carol", "carol-password-1")
@@ -416,7 +456,8 @@ class OpenCaimex(CaimexCase):
         name, variables = handler.rendered
         self.assertEqual(name, "caimex.html")
         self.assertEqual(variables, {"again_url": "/hub/caimex/again",
-                                     "caimex_url": "https://caimex.test/org/org-1/overview"})
+                                     "caimex_url": "https://caimex.test/org/org-1/overview",
+                                     "differs": False})
 
     async def test_it_only_offers_once(self):
         self.ns["_cx_sessions"].clear()
@@ -444,6 +485,99 @@ class OpenCaimex(CaimexCase):
         self.assertIn("erin", self.ns["_cx_running"])
         handler = await self.open_caimex("erin")
         self.assertEqual(handler.token, "register-token:erin@zai.example")
+
+
+class ChangePassword(CaimexCase):
+    """The hub's Change password page changes the Caimex password too."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.add_user("alice", "alice-password-1")
+        await self.sign_in("alice", "alice-password-1")
+        self.caimex.calls.clear()
+
+    def hub_password_is(self, name, password):
+        return self.auth.get_user(name).is_valid_password(password)
+
+    async def test_caimex_follows_a_change_made_here(self):
+        handler = await self.change_password("alice", "alice-password-1", "alice-new-password")
+        self.assertTrue(self.hub_password_is("alice", "alice-new-password"))
+        self.assertEqual(self.caimex.accounts["alice@zai.example"]["password"], "alice-new-password")
+        self.assertEqual(self.caimex.calls, [
+            ("user-login", "alice@zai.example"), ("change-password", "alice@zai.example"),
+            ("user-login", "alice@zai.example")])
+        name, variables = handler.rendered
+        self.assertEqual((name, variables["alert"], variables["caimex_password"]),
+                         ("change-password.html", "alert-success", "changed"))
+        # Caimex ended the old session; Open Caimex has the new one.
+        self.assertEqual((await self.open_caimex("alice")).token, "login-token:alice@zai.example")
+        self.assertEqual(self.status("alice"), ("created", ""))
+
+    async def test_a_different_caimex_password_is_left_alone(self):
+        self.add_user("bob", "bob-password-123")
+        self.caimex.accounts["bob@zai.example"] = {"password": "his-own-caimex-pw", "member": False}
+        await self.sign_in("bob", "bob-password-123")
+        handler = await self.change_password("bob", "bob-password-123", "bob-new-password-1")
+        self.assertTrue(self.hub_password_is("bob", "bob-new-password-1"))
+        self.assertEqual(self.caimex.accounts["bob@zai.example"]["password"], "his-own-caimex-pw")
+        self.assertNotIn("change-password", self.what())
+        self.assertEqual(handler.rendered[1]["caimex_password"], "different")
+        self.assertTrue((await self.open_caimex("bob")).rendered[1]["differs"])
+
+    async def test_two_factor_on_caimex_is_left_alone(self):
+        self.caimex.accounts["alice@zai.example"]["mfa"] = True
+        handler = await self.change_password("alice", "alice-password-1", "alice-new-password")
+        self.assertEqual(self.caimex.accounts["alice@zai.example"]["password"], "alice-password-1")
+        self.assertEqual(handler.rendered[1]["caimex_password"], "different")
+
+    async def test_a_refused_change_here_never_reaches_caimex(self):
+        for old, new, confirm in (("not-her-password", "alice-new-password", None),
+                                  ("alice-password-1", "alice-new-password", "a-typo-password"),
+                                  ("alice-password-1", "short", None)):
+            handler = await self.change_password("alice", old, new, confirm)
+            self.assertEqual(handler.rendered[1]["alert"], "alert-danger")
+            self.assertIsNone(handler.rendered[1]["caimex_password"])
+        self.assertEqual(self.caimex.calls, [])
+        self.assertTrue(self.hub_password_is("alice", "alice-password-1"))
+
+    async def test_caimex_unreachable_still_changes_the_password_here(self):
+        self.server.stop()
+        await self.server.close_all_connections()    # Caimex is down
+        handler = await self.change_password("alice", "alice-password-1", "alice-new-password")
+        self.assertTrue(self.hub_password_is("alice", "alice-new-password"))
+        self.assertEqual(handler.rendered[1]["caimex_password"], "failed")
+
+    async def test_without_a_caimex_account_nothing_is_sent(self):
+        self.add_user("dora", "dora-password-12")     # never signed in
+        handler = await self.change_password("dora", "dora-password-12", "dora-new-password")
+        self.assertEqual(self.caimex.calls, [])
+        self.assertIsNone(handler.rendered[1]["caimex_password"])
+
+    async def test_reconnect_after_making_them_the_same(self):
+        # A reset here leaves Caimex on the old password: one refusal, then
+        # the hub stops trying and Open Caimex says why.
+        self.auth.change_password("alice", "alice-reset-password")
+        self.ns["_cx_sessions"].clear()
+        await self.sign_in("alice", "alice-reset-password")
+        handler = await self.open_caimex("alice")
+        self.assertTrue(handler.rendered[1]["differs"])
+        # She sets the same password in Caimex and chooses Reconnect.
+        self.caimex.accounts["alice@zai.example"]["password"] = "alice-reset-password"
+        again = FakeHandler("alice", self.db, {"reconnect": "1"})
+        await self.ns["OpenCaimexAgain"].get(again)
+        self.assertTrue(again.cookie_cleared)
+        self.assertEqual(again.redirected_to, "/hub/login?next=%2Fhub%2Fcaimex%3Ftried%3D1")
+        await self.sign_in("alice", "alice-reset-password")
+        self.assertEqual((await self.open_caimex("alice", tried="1")).token, "login-token:alice@zai.example")
+
+    async def test_sign_in_again_alone_does_not_turn_retrying_back_on(self):
+        self.auth.change_password("alice", "alice-reset-password")
+        self.ns["_cx_sessions"].clear()
+        await self.sign_in("alice", "alice-reset-password")
+        await self.ns["OpenCaimexAgain"].get(FakeHandler("alice", self.db))
+        self.caimex.calls.clear()
+        await self.sign_in("alice", "alice-reset-password")
+        self.assertEqual(self.caimex.calls, [])
 
 
 class Failures(CaimexCase):
@@ -576,7 +710,8 @@ class PlainHttpAddress(CaimexCase):
 class Pages(CaimexCase):
     def render(self, name, **variables):
         env = Environment(autoescape=True, loader=DictLoader({
-            "page.html": "{% block main %}{% endblock %}", name: template(name)}))
+            "page.html": "{% block main %}{% endblock %}", "zai-panel.html": "",
+            name: template(name)}))
         return env.get_template(name).render(base_url="/hub/", **variables)
 
     async def test_approve_page_shows_each_state(self):
@@ -603,6 +738,29 @@ class Pages(CaimexCase):
                            caimex_url="https://caimex.test/org/org-1/overview")
         self.assertIn('href="/hub/caimex/again"', page)
         self.assertIn('href="https://caimex.test/org/org-1/overview"', page)
+        self.assertNotIn("Reconnect", page)
+
+    def test_password_differs_page(self):
+        page = self.render("caimex.html", again_url="/hub/caimex/again?reconnect=1",
+                           caimex_url="https://caimex.test/org/org-1/overview", differs=True,
+                           **self.page_vars)
+        self.assertIn("Your Caimex password is different", page)
+        self.assertIn('href="/hub/caimex/again?reconnect=1">Reconnect</a>', page)
+        self.assertIn('href="https://caimex.test/forgot-password"', page)
+
+    def test_password_pages_say_what_happened_in_caimex(self):
+        def change(outcome):
+            return self.render("change-password.html", result_message="Your password has been changed successfully!",
+                               alert="alert-success", caimex_password=outcome)
+        self.assertIn("Your Caimex password is now this one too", change("changed"))
+        self.assertIn("left as it is", change("different"))
+        self.assertIn("may still be your old one", change("failed"))
+        self.assertNotIn("Caimex", change(None))
+        reset = self.render("reset.html", done=True, username="alice", **self.page_vars)
+        self.assertIn('href="https://caimex.test/forgot-password"', reset)
+        self.assertNotIn("Caimex", self.render("reset.html", done=True, username="alice"))
+        self.assertIn("Their Caimex password doesn't change",
+                      self.render("change-password-admin.html", **self.page_vars))
 
     def test_nav_link_and_signup_note_are_conditional(self):
         self.assertIn('href="{{base_url}}caimex"', template("page.html"))
