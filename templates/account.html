@@ -73,7 +73,8 @@
       {% endif %}
       <div class="z-actions">
         {% if user.running %}
-        <a class="z-btn" href="{{ user.url }}">Open JupyterLab</a>
+        {% set tpl = zai_template(user.spawner) if zai_template is defined and user.spawner is defined else None %}
+        <a class="z-btn" href="{{ user.url }}">Open {{ tpl.opens if tpl else "JupyterLab" }}</a>
         <a class="z-btn is-quiet" href="{{ base_url }}home">Manage</a>
         {% else %}
         <a class="z-btn is-quiet" href="{{ base_url }}spawn">Start a server</a>

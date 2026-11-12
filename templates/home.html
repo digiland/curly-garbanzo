@@ -10,6 +10,8 @@
 
 {% block main %}
 {% set zh = zai_home if zai_home is defined else None %}
+{# zai_template (hub-ext/zai_platform.py): what the running server opens. #}
+{% set tpl = zai_template(default_server) if zai_template is defined else None %}
 <div class="z-page">
   <div class="z-page-head">
     <div>
@@ -24,7 +26,7 @@
   {% if default_server.active %}
   <section class="z-card" style="display:grid;gap:1.1rem">
     {% set r = zh.running[0] if zh and zh.running else None %}
-    <div class="z-mid" style="font-size:1.5rem">{{ r.size if r else "Your server" }}</div>
+    <div class="z-mid" style="font-size:1.5rem">{{ r.size if r else "Your server" }}{% if tpl %} <small class="z-sub">with {{ tpl.name }}</small>{% endif %}</div>
     {% if r %}
     <div class="z-figs">
       <div><span class="z-label">For</span><b>{{ r.for }}</b></div>
@@ -34,9 +36,10 @@
     </div>
     {% endif %}
     <div class="z-actions">
-      <a id="start" role="button" class="z-btn" href="{{ url }}">Open JupyterLab</a>
+      <a id="start" role="button" class="z-btn" href="{{ url }}">Open {{ tpl.opens if tpl else "JupyterLab" }}</a>
       <a id="stop" role="button" class="z-btn is-danger">Stop server</a>
     </div>
+    {% if tpl and tpl.next_step %}<p class="z-sub" style="margin:0">{{ tpl.next_step }}</p>{% endif %}
   </section>
   {% else %}
   {% if zh %}

@@ -58,6 +58,7 @@ class Case(unittest.TestCase):
             "page.html": "{% block main %}{% endblock %}{% block script %}{% endblock %}",
             name: open(os.path.join(REPO, "templates", name)).read()}))
         cat = zai_platform.CATALOG
+        variables.setdefault("zai_template", cat.template_of)
         return env.get_template(name).render(
             base_url="/hub/", xsrf="X", catalog=cat, money=cat.money, rate_str=cat.rate_str,
             when=zai_platform._when, dur=zai_platform._dur, size_name=zai_platform._size_name, **variables)
@@ -215,6 +216,68 @@ class Home(Case):
                            default_server=types.SimpleNamespace(active=False, ready=False))
         self.assertIn('id="start"', page)
         self.assertNotIn("spawn#", page)
+
+
+class TemplateNames(Case):
+    """Buttons and the starting page name what the server opens (QAT: ComfyUI
+    and vLLM servers were offered as "Open JupyterLab")."""
+
+    def running_home(self, template=None):
+        opts = {"profile": "gpu-18", **({"template": template} if template else {})}
+        server = types.SimpleNamespace(active=True, ready=True, user_options=opts)
+        return self.render("home.html", user=person(running=True), url="/user/tendai/",
+                           default_server=server, zai_home=zai_myusage._mu_home(person(running=True)))
+
+    def test_template_of_a_server(self):
+        of = zai_platform.CATALOG.template_of
+        self.assertEqual(of(types.SimpleNamespace(user_options={"template": "comfyui"}))["opens"], "ComfyUI")
+        self.assertEqual(of(types.SimpleNamespace(user_options={}))["slug"], "pytorch")
+        self.assertEqual(of(types.SimpleNamespace(user_options={"template": "gone"}))["slug"], "pytorch")
+        self.assertEqual(of(None)["slug"], "pytorch")
+
+    def test_home_opens_comfyui(self):
+        page = self.running_home("comfyui")
+        self.assertIn(">Open ComfyUI</a>", page)
+        self.assertIn("with ComfyUI", page)
+        self.assertNotIn("JupyterLab", page)
+
+    def test_home_says_how_to_start_vllm(self):
+        page = self.running_home("vllm")
+        self.assertIn(">Open JupyterLab</a>", page)
+        self.assertIn("with vLLM inference server", page)
+        self.assertIn("run zai-vllm with a model name", page)
+        self.assertIn("/user/&lt;you&gt;/proxy/8000/v1", page)
+
+    def test_home_default_template(self):
+        page = self.running_home()
+        self.assertIn(">Open JupyterLab</a>", page)
+        self.assertIn("with PyTorch + JupyterLab", page)
+        self.assertNotIn("zai-vllm", page)
+
+    def test_account_opens_comfyui(self):
+        user = person(running=True)
+        user.spawner = types.SimpleNamespace(user_options={"template": "comfyui"})
+        with zai_platform._db() as con:
+            acct = zai_platform.account(con, user.name)
+        page = self.render("account.html", user=user, acct=acct, history=[], free={}, admin_free=False,
+                           public_host="h", now=time.time(), two_factor=False)
+        self.assertIn(">Open ComfyUI</a>", page)
+
+    def test_starting_page_names_where_it_goes(self):
+        def starting(opts):
+            return self.render("spawn_pending.html", user=person(), progress_url="/p",
+                               spawner=types.SimpleNamespace(user_options=opts))
+        self.assertIn("taken to ComfyUI as soon", starting({"template": "comfyui"}))
+        self.assertIn("taken to JupyterLab as soon", starting({"template": "vllm"}))
+        self.assertIn("taken to JupyterLab as soon", starting({}))
+
+    def test_start_bar_summary_is_found_after_the_form(self):
+        # #z-summary comes after the form in spawn.html, so the script must
+        # look it up when it runs, not when the form's script is parsed.
+        html = zai_platform.options_form(types.SimpleNamespace(user=person()))
+        script = html[html.index("<script>"):]
+        self.assertGreater(script.index("getElementById('z-summary')"), script.index("function sync()"))
+        self.assertIn("DOMContentLoaded", script)
 
 
 class Token(Case):
