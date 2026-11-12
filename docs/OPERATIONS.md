@@ -76,6 +76,41 @@ kubectl -n jupyterhub port-forward svc/proxy-public 8080:http
 
 Deleting the admin user from `/hub/admin` re-opens this. Don't.
 
+The hub marks its cookies Secure (see below), so Safari will not sign in
+over plain `http://localhost:8080`. Use Chrome or Firefox for the port-forward.
+
+## Security settings
+
+These answer the security assessment of November 2026. Part is in the chart
+(`05-security-headers` and the login text) and part is in Cloudflare, for the
+`futurezim.com` zone under SSL/TLS, Edge Certificates:
+
+- **Always Use HTTPS:** on. Plain http is redirected (finding 1.1).
+- **HSTS:** on, max-age 6 months, include subdomains, no preload (1.1, 1.4).
+- **Minimum TLS Version:** 1.2, and **TLS 1.3** on (1.3).
+- Optional: a Transform Rule that removes the `X-JupyterHub-Version`
+  response header (1.4).
+
+In the chart:
+
+- **Headers on every hub page:** `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy`, and a Content-Security-Policy in
+  report-only mode. Report-only logs in the browser console and blocks
+  nothing; JupyterHub's own enforced policy (`frame-ancestors 'none'`) stays.
+  Once the console shows no reports, it can be switched to enforce. (1.4)
+- **Cookies:** Secure and `SameSite=Lax`. The `_xsrf` cookie is not HttpOnly
+  on purpose: it is a CSRF token that JupyterHub's pages read and send back,
+  and it gives no access on its own. (1.5)
+- **Lockout:** 5 failed sign-ins lock an account for 15 minutes. The pages no
+  longer say so (1.2).
+
+Check from any machine:
+
+```bash
+curl -sI http://notebooks.futurezim.com/hub/login | head -3        # 301 to https
+curl -sI https://notebooks.futurezim.com/hub/login | grep -i -E "strict-transport|x-frame|nosniff|referrer|set-cookie"
+```
+
 ## Sizing
 
 Sizes, their RAM/CPU grants and their prices live in `hub-ext/catalog.yaml`
