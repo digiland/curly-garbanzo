@@ -472,6 +472,10 @@
   .z-ep-err { font-size: .78rem; color: var(--z-bad); margin-top: .25rem; max-width: 28rem; overflow-wrap: anywhere; }
   .z-ep-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .75rem; }
   .z-ep-actions:empty { display: none; }
+  .z-ep-request { border-top: 1px solid var(--z-line); padding: .85rem 0; }
+  .z-ep-request p { margin: 0 0 .4rem; font-size: .9rem; overflow-wrap: anywhere; }
+  .z-ep-decline { display: flex; gap: .5rem; flex: 1 1 18rem; }
+  .z-ep-decline .z-input { flex: 1; min-width: 0; }
   .z-ep-run { display: grid; gap: .6rem; }
   .z-ep-run textarea, #c-env { font-family: var(--z-mono); font-size: .85rem; }
   .z-ep-wide { grid-column: 1 / -1; }
@@ -521,7 +525,7 @@
     {{ super() }}
     {% if user %}
         <li class="nav-item"><a class="nav-link" href="{{base_url}}account">Account</a></li>
-        {% if zai_serverless is defined and zai_serverless %}<li class="nav-item"><a class="nav-link" href="{{base_url}}endpoints">Endpoints</a></li>{% endif %}
+        {% if zai_serverless is defined and zai_serverless %}{% set zer = zai_endpoint_requests if zai_endpoint_requests is defined else 0 %}<li class="nav-item"><a class="nav-link" href="{{base_url}}endpoints{% if zer %}#requests{% endif %}">Endpoints{% if zer %} <span class="z-nav-balance">({{ zer }})</span>{% endif %}</a></li>{% endif %}
     {% endif %}
     {% if user and not user.admin %}<li class="nav-item"><a class="nav-link" href="{{base_url}}my-usage">Usage</a></li>{% endif %}
     {% if user and user.admin %}
