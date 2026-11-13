@@ -371,5 +371,99 @@ class SelfServiceEndpoints(Case):
         self.assertNotIn('value="delete"', self.page(self.member(groups=()), [self.endpoint("tendai")]))
 
 
+class FlashHandler:
+    """Enough of a BaseHandler for the POST side of Endpoints and Billing: body
+    arguments in, signed cookies and a redirect or a render out."""
+    SECRET = "s" * 32
+
+    def __init__(self, user, body=None, cookies=None):
+        self.current_user, self.body, self.cookies = user, body or {}, dict(cookies or {})
+        self.hub = types.SimpleNamespace(base_url="/hub/")
+        self.log = types.SimpleNamespace(info=lambda *a: None)
+        self.db = types.SimpleNamespace(query=lambda m: types.SimpleNamespace(
+            filter_by=lambda **k: types.SimpleNamespace(first=lambda: object())))
+        self.redirected, self.rendered = None, None
+
+    def get_body_argument(self, name, default=None):
+        return self.body.get(name, default)
+
+    def _set_cookie(self, key, value, **kw):
+        from tornado.web import create_signed_value
+        self.cookies[key] = create_signed_value(self.SECRET, key, value).decode()
+
+    def get_cookie(self, key):
+        return self.cookies.get(key)
+
+    def get_secure_cookie(self, key, max_age_days=31):
+        from tornado.web import decode_signed_value
+        return decode_signed_value(self.SECRET, key, self.cookies.get(key), max_age_days=max_age_days)
+
+    def clear_cookie(self, key, **kw):
+        self.cookies.pop(key, None)
+
+    def redirect(self, url):
+        self.redirected = url
+
+    async def get(self, message="", error=""):
+        self.rendered = {"message": message or zai_platform.take_flash(self), "error": error}
+
+
+class NoRepeatOnReload(Case):
+    """After a POST that changed something the browser is sent to a GET, so
+    reloading the page doesn't queue the job or add the top-up again."""
+
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+
+        async def gateway(user, method, path, body=None):
+            self.sent.append((method, path))
+            return {"id": "4b021fb2-0000-0000-0000-000000000000"}
+        self._gateway, zai_platform.gateway = zai_platform.gateway, gateway
+
+    def tearDown(self):
+        zai_platform.gateway = self._gateway
+
+    def post(self, cls, user, body, cookies=None):
+        import asyncio
+        h = FlashHandler(user, body, cookies)
+        h._admin = lambda: None
+        asyncio.run(cls.post(h))
+        return h
+
+    def test_send_job_redirects_and_the_message_shows_once(self):
+        h = self.post(zai_platform.EndpointsPage, person(),
+                      {"action": "run", "endpoint": "yops5sh2btvu", "input": '{"hi": 1}'})
+        self.assertEqual(h.redirected, "/hub/endpoints")
+        self.assertIsNone(h.rendered)
+        self.assertEqual(self.sent, [("POST", "/v2/yops5sh2btvu/run")])
+        self.assertEqual(zai_platform.take_flash(h), "Job 4b021fb2 queued. It appears under Recent jobs.")
+        self.assertEqual(zai_platform.take_flash(h), "")       # a second reload: no message, no job
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_failed_action_renders_in_place(self):
+        h = self.post(zai_platform.EndpointsPage, person(),
+                      {"action": "run", "endpoint": "yops5sh2btvu", "input": "{hi"})
+        self.assertIsNone(h.redirected)
+        self.assertIn("not valid JSON", h.rendered["error"])
+        self.assertEqual(self.sent, [])
+
+    def test_top_up_redirects_and_a_reload_adds_nothing(self):
+        h = self.post(zai_platform.BillingHandler, person("boss", admin=True),
+                      {"username": "tendai", "kind": "topup", "amount": "5", "note": "uat"})
+        self.assertEqual(h.redirected, "/hub/billing")
+        self.assertIn("$5.00 added to tendai", zai_platform.take_flash(h))
+        with zai_platform._db() as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM ledger WHERE kind='topup'").fetchone()[0], 1)
+
+    def test_an_old_or_forged_message_is_ignored(self):
+        from unittest import mock
+        h = FlashHandler(person())
+        zai_platform.flash_redirect(h, "endpoints", "hello")
+        with mock.patch("tornado.web.time.time", return_value=time.time() + 600):
+            self.assertEqual(zai_platform.take_flash(h), "")
+        self.assertEqual(zai_platform.take_flash(FlashHandler(person(), cookies={"zai-flash": "hello"})), "")
+
+
 if __name__ == "__main__":
     unittest.main()
