@@ -366,6 +366,11 @@ class SelfServiceEndpoints(Case):
         self.assertIn('name="owner"', page)
         self.assertIn("Folder in their home", page)
 
+    def test_delete_shows_with_no_recent_jobs(self):
+        page = self.page(self.member(), [self.endpoint("tendai")])
+        self.assertIn("No jobs in the last 30 minutes", page)
+        self.assertGreater(page.index('value="delete"'), page.rindex("</details>"))   # not folded away
+
     def test_member_deletes_only_their_own(self):
         self.assertIn('value="delete"', self.page(self.member(), [self.endpoint("tendai")]))
         self.assertNotIn('value="delete"', self.page(self.member(groups=()), [self.endpoint("tendai")]))
