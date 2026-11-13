@@ -173,25 +173,29 @@ print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-cop
       {% else %}
       <p class="z-ep-small">No jobs in the last 30 minutes.</p>
       {% endif %}
-      <div class="z-ep-actions">
-        {% if h.jobs.inQueue %}
-        <form method="post" action="{{ base_url }}endpoints">
-          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
-          <input type="hidden" name="action" value="purge">
-          <input type="hidden" name="endpoint" value="{{ e.id }}">
-          <button type="submit" class="z-btn is-quiet is-sm">Remove {{ h.jobs.inQueue }} queued job{{ 's' if h.jobs.inQueue != 1 }}</button>
-        </form>
-        {% endif %}
-        {% if user.admin or (can_create and e.owner == user.name) %}
-        <form method="post" action="{{ base_url }}endpoints" data-confirm="Delete {{ e.name }}? Queued and running jobs are cancelled. The handler files are kept.">
-          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
-          <input type="hidden" name="action" value="delete">
-          <input type="hidden" name="endpoint" value="{{ e.id }}">
-          <button type="submit" class="z-btn is-danger is-sm">Delete endpoint</button>
-        </form>
-        {% endif %}
-      </div>
     </details>
+
+    {# Outside Recent jobs, which is folded shut when there are none. #}
+    {% if h.jobs.inQueue or user.admin or (can_create and e.owner == user.name) %}
+    <div class="z-ep-actions">
+      {% if h.jobs.inQueue %}
+      <form method="post" action="{{ base_url }}endpoints">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="purge">
+        <input type="hidden" name="endpoint" value="{{ e.id }}">
+        <button type="submit" class="z-btn is-quiet is-sm">Remove {{ h.jobs.inQueue }} queued job{{ 's' if h.jobs.inQueue != 1 }}</button>
+      </form>
+      {% endif %}
+      {% if user.admin or (can_create and e.owner == user.name) %}
+      <form method="post" action="{{ base_url }}endpoints" data-confirm="Delete {{ e.name }}? Queued and running jobs are cancelled. The handler files are kept.">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="endpoint" value="{{ e.id }}">
+        <button type="submit" class="z-btn is-danger is-sm">Delete endpoint</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
   </section>
   {% endfor %}
 
