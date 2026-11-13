@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -282,6 +283,21 @@ def init_db():
                 ts         REAL NOT NULL
             )""")
         con.execute("CREATE INDEX IF NOT EXISTS ix_ledger_user ON ledger(username, ts)")
+        # Asking to create endpoints (join serverless.creators_group). Never
+        # deleted; at most one waiting per user.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS zai_endpoint_requests (
+                id         INTEGER PRIMARY KEY,
+                username   TEXT NOT NULL,
+                note       TEXT NOT NULL DEFAULT '',   -- what they will run
+                status     TEXT NOT NULL,              -- pending | approved | declined | cancelled
+                created    REAL NOT NULL,
+                decided    REAL,
+                decided_by TEXT NOT NULL DEFAULT '',
+                reason     TEXT NOT NULL DEFAULT ''    -- why, when declined
+            )""")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_endpoint_requests_one_pending"
+                    " ON zai_endpoint_requests(username) WHERE status='pending'")
 
 
 def session_cost(rate, started, end):
@@ -710,6 +726,168 @@ def can_create_endpoints(user):
     return user.admin or bool(g and any(x.name == g for x in user.groups))
 
 
+# Asking to create endpoints: a user asks on the Endpoints page, an
+# administrator approves (which adds them to creators_group) or declines with
+# a reason the user sees. Like zai_credit's credit requests.
+EQ_NOTE_MAX, EQ_REASON_MAX = 500, 300
+
+
+def eq_ask(username, note):
+    """Store a waiting request; ValueError with what is wrong."""
+    note = note.strip()
+    if len(note) > EQ_NOTE_MAX:
+        raise ValueError(f"Keep it to {EQ_NOTE_MAX} characters.")
+    try:
+        with _db() as con:
+            return con.execute("INSERT INTO zai_endpoint_requests(username, note, status, created)"
+                               " VALUES (?,?,'pending',?)", (username, note, time.time())).lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError("You already have a request waiting.")
+
+
+def eq_cancel(username):
+    with _db() as con:
+        con.execute("UPDATE zai_endpoint_requests SET status='cancelled', decided=?, decided_by=?"
+                    " WHERE username=? AND status='pending'", (time.time(), username, username))
+
+
+def eq_decide(rid, admin, action, reason="", add_to_group=lambda name: None):
+    """Approve or decline a waiting request; returns it as it was. Approving
+    marks it only while it is still waiting and calls add_to_group inside the
+    same transaction, so two admins cannot both approve, and a failed group
+    change leaves the request waiting."""
+    with _db() as con:
+        req = con.execute("SELECT * FROM zai_endpoint_requests WHERE id=?", (rid,)).fetchone()
+        if req is None:
+            raise ValueError("No such request.")
+        if req["status"] != "pending":
+            raise ValueError(f"This request was already {req['status']}.")
+        if action == "approve":
+            cur = con.execute("UPDATE zai_endpoint_requests SET status='approved', decided=?, decided_by=?"
+                              " WHERE id=? AND status='pending'", (time.time(), admin, rid))
+            if cur.rowcount != 1:
+                raise ValueError("This request was already decided.")
+            add_to_group(req["username"])
+        elif action == "decline":
+            reason = reason.strip()
+            if not reason:
+                raise ValueError("Say why the request is declined; the user sees it.")
+            cur = con.execute("UPDATE zai_endpoint_requests SET status='declined', decided=?, decided_by=?, reason=?"
+                              " WHERE id=? AND status='pending'", (time.time(), admin, reason[:EQ_REASON_MAX], rid))
+            if cur.rowcount != 1:
+                raise ValueError("This request was already decided.")
+        else:
+            raise ValueError("Approve or decline.")
+        return dict(req)
+
+
+def eq_add_to_group(db, username):
+    """Add a user to creators_group in the hub database, making the group the
+    first time. ValueError if that cannot be done."""
+    g = CATALOG.sv_creators_group
+    if not g:
+        raise ValueError("No creators group is set (serverless.creators_group in the catalog).")
+    try:
+        u = orm.User.find(db, username)
+        if u is None:
+            raise ValueError(f"There is no user {username!r} any more; decline the request.")
+        group = orm.Group.find(db, g)
+        if group is None:
+            group = orm.Group(name=g)
+            db.add(group)
+        if group not in u.groups:
+            u.groups.append(group)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def eq_view(username, admin):
+    """What the Endpoints page shows: the user's latest request and, for
+    admins, the waiting ones (with each asker's balance) and the last decided."""
+    with _db() as con:
+        mine = con.execute("SELECT * FROM zai_endpoint_requests WHERE username=? ORDER BY id DESC LIMIT 1",
+                           (username,)).fetchone()
+        view = {"mine": dict(mine) if mine else None, "pending": [], "recent": []}
+        if admin:
+            view["pending"] = [dict(r, balance=account(con, r["username"])["balance"]) for r in con.execute(
+                "SELECT * FROM zai_endpoint_requests WHERE status='pending' ORDER BY id")]
+            view["recent"] = [dict(r) for r in con.execute(
+                "SELECT * FROM zai_endpoint_requests WHERE status IN ('approved','declined')"
+                " ORDER BY decided DESC LIMIT 10")]
+    return view
+
+
+def eq_pending_count(user):
+    """template_vars hook: waiting requests, for the admin nav's Endpoints link."""
+    if user is None or not getattr(user, "admin", False) or not CATALOG.sv_enabled:
+        return 0
+    try:
+        with _db() as con:
+            return con.execute("SELECT COUNT(*) FROM zai_endpoint_requests WHERE status='pending'").fetchone()[0]
+    except Exception:
+        return 0
+
+
+_EQ_MAIL_TASKS = set()
+
+
+def eq_notify(db, kind, req):
+    """Email about a request, through zai_reset's outgoing mail when that is
+    set up; without it there is no email, and the page and the nav count are
+    how admins and users find out. Sent in the background: a slow mail server
+    must not hold up the page."""
+    rs = sys.modules.get("zai_reset")
+    if rs is None or not rs._RS["on"]:
+        return
+    from nativeauthenticator.orm import UserInfo
+
+    def email(name):
+        info = UserInfo.find(db, name)
+        return (info.email or "").strip() if info else ""
+    page = f"{rs._RS['public']}/hub/endpoints"
+    name = req["username"]
+    if kind == "asked":
+        to = [e for e in (email(u.name) for u in db.query(orm.User).filter_by(admin=True)) if e]
+        subject = f"{name} asks to create serverless endpoints"
+        text = (f"{name} asked to create their own serverless endpoints.\n\n"
+                f"What they will run: {req['note'] or '(they did not say)'}\n\n"
+                f"Approve or decline at {page}#requests\n\nZAI Compute\n")
+    elif kind == "approved":
+        to = [email(name)]
+        subject = "You can now create serverless endpoints"
+        text = f"Hello {name},\n\nYou can now create your own serverless endpoints at {page}#create\n\nZAI Compute\n"
+    else:
+        to = [email(name)]
+        subject = "Your serverless endpoints request"
+        text = (f"Hello {name},\n\nYour request to create serverless endpoints was declined:\n"
+                f"{req['reason']}\n\nYou can ask again at {page}\n\nZAI Compute\n")
+    for addr in filter(None, to):
+        t = asyncio.ensure_future(rs._rs_send(addr, subject, text))
+        _EQ_MAIL_TASKS.add(t)
+        t.add_done_callback(_EQ_MAIL_TASKS.discard)
+
+
+FLASH_COOKIE = "zai-flash"
+
+
+def flash_redirect(handler, page, message):
+    """After a change worked: send the browser to a plain GET of the page, so a
+    reload shows it again instead of repeating the change (queueing another job,
+    adding another top-up). The message rides along in a signed cookie."""
+    handler._set_cookie(FLASH_COOKIE, message, path=handler.hub.base_url)
+    handler.redirect(handler.hub.base_url + page)
+
+
+def take_flash(handler):
+    """The message flash_redirect left, once; "" if none or older than 5 minutes."""
+    raw = handler.get_secure_cookie(FLASH_COOKIE, max_age_days=5 / 1440)
+    if handler.get_cookie(FLASH_COOKIE) is not None:
+        handler.clear_cookie(FLASH_COOKIE, path=handler.hub.base_url)
+    return raw.decode() if raw else ""
+
+
 class EndpointsPage(BaseHandler):
     """GET/POST /hub/endpoints -- serverless endpoints: how to call them, their
     queue, workers and recent jobs. Owners send test jobs and cancel; admins
@@ -721,6 +899,8 @@ class EndpointsPage(BaseHandler):
     @web.authenticated
     async def get(self, message="", error=""):
         user = self.current_user
+        if not (message or error):
+            message = take_flash(self)
         endpoints, unavailable = [], ""
         try:
             listed = await gateway(user, "GET", "/v2/endpoints" + ("?all=1" if user.admin else ""))
@@ -742,7 +922,8 @@ class EndpointsPage(BaseHandler):
             "endpoints.html", endpoints=endpoints, unavailable=unavailable, spend=spend,
             message=message, error=error, catalog=CATALOG, money=CATALOG.money, rate_str=CATALOG.rate_str,
             size_name=_size_name, public_host=self.request.host, users=users, now_ms=int(now * 1000),
-            form=self._form, can_create=can_create_endpoints(user))
+            form=self._form, can_create=can_create_endpoints(user), access=eq_view(user.name, user.admin),
+            when=_when, note_max=EQ_NOTE_MAX, reason_max=EQ_REASON_MAX)
         self.finish(html)
 
     @web.authenticated
@@ -786,12 +967,43 @@ class EndpointsPage(BaseHandler):
                     raise web.HTTPError(403, "Ask an administrator to delete the endpoint")
                 await gateway(user, "DELETE", f"/v2/endpoints/{ep}")
                 msg = f"Deleted endpoint {ep}. Its queued and running jobs were cancelled."
+            elif action == "request":
+                if can_create_endpoints(user):
+                    raise GatewayError("You can already create endpoints.")
+                if not CATALOG.sv_creators_group:
+                    raise GatewayError("Only administrators create endpoints on this hub.")
+                note = self.get_body_argument("note", "")
+                try:
+                    eq_ask(user.name, note)
+                except ValueError as ex:
+                    raise GatewayError(str(ex))
+                eq_notify(self.db, "asked", {"username": user.name, "note": note.strip()})
+                msg = "Request sent. An administrator will look at it; the answer shows here."
+            elif action == "request-cancel":
+                eq_cancel(user.name)
+                msg = "Request cancelled."
+            elif action == "request-decide":
+                if not user.admin:
+                    raise web.HTTPError(403, "Administrators only")
+                rid, decision = self.get_body_argument("id", ""), self.get_body_argument("decision", "")
+                reason = self.get_body_argument("reason", "")
+                if not rid.isdigit():
+                    raise web.HTTPError(400, "No such request.")
+                try:
+                    req = eq_decide(int(rid), user.name, decision, reason,
+                                    add_to_group=lambda name: eq_add_to_group(self.db, name))
+                except ValueError as ex:
+                    raise GatewayError(str(ex))
+                req["reason"] = reason.strip()[:EQ_REASON_MAX]
+                eq_notify(self.db, "approved" if decision == "approve" else "declined", req)
+                msg = (f"{req['username']} can now create endpoints." if decision == "approve"
+                       else f"Declined {req['username']}'s request.")
             else:
                 raise web.HTTPError(400, "unknown action")
         except GatewayError as ex:
-            return await self.get(error=str(ex))
+            return await self.get(error=str(ex))     # rendered here, so the create form keeps what was typed
         self.log.info("endpoints: %s %s %s", user.name, action, ep)
-        await self.get(message=msg)
+        flash_redirect(self, "endpoints", msg)
 
     @staticmethod
     def _create_body(f):
@@ -845,6 +1057,8 @@ class BillingHandler(BaseHandler):
     @web.authenticated
     async def get(self, message="", error=""):
         self._admin()
+        if not (message or error):
+            message = take_flash(self)
         only = self.get_argument("user", "")
         now = time.time()
         month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -903,7 +1117,7 @@ class BillingHandler(BaseHandler):
             return await self.get(error=str(ex))
         self.log.info("billing: %s %s %s for %s (%s)", self.current_user.name, kind,
                       CATALOG.money(micros), username, note)
-        await self.get(message=f"{CATALOG.money(micros)} added to {username}. New balance {CATALOG.money(bal)}.")
+        flash_redirect(self, "billing", f"{CATALOG.money(micros)} added to {username}. New balance {CATALOG.money(bal)}.")
 
 
 class UsageHandler(BaseHandler):
@@ -1219,6 +1433,7 @@ def configure(c):
     tv = dict(c.JupyterHub.get("template_vars", {}) or {})
     tv["zai_balance"] = nav_balance
     tv["zai_serverless"] = CATALOG.sv_enabled
+    tv["zai_endpoint_requests"] = eq_pending_count
     c.JupyterHub.template_vars = tv
 
     handlers = list(c.JupyterHub.get("extra_handlers", []) or [])

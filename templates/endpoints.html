@@ -30,6 +30,62 @@
 
   {% if message %}<p class="z-alert is-ok" role="status">{{ message }}</p>{% endif %}
   {% if error %}<p class="z-alert is-bad" role="alert">{{ error }}</p>{% endif %}
+
+  {# Admins: people asking to create endpoints (hub-ext/zai_platform.py, eq_*). #}
+  {% if user.admin and (access.pending or access.recent) %}
+  <section class="z-card" id="requests">
+    <h2>Access requests{% if access.pending %} · {{ access.pending | length }}{% endif %}</h2>
+    {% if access.pending %}
+    <p class="z-ep-small" style="margin-top:0">Approving adds them to <code>{{ catalog.sv_creators_group }}</code>: they create up to {{ catalog.sv_max_endpoints }} endpoints of their own, paid from their credit.</p>
+    {% for r in access.pending %}
+    <div class="z-ep-request">
+      <p><strong>{{ r.username }}</strong> · asked {{ when(r.created) }} UTC · balance {{ money(r.balance) }} · <a href="{{ base_url }}authorize#{{ r.username }}">sign-up details</a></p>
+      <p>{% if r.note %}{{ r.note }}{% else %}<span class="z-ep-small">They didn't say what they will run.</span>{% endif %}</p>
+      <div class="z-ep-actions">
+        <form method="post" action="{{ base_url }}endpoints">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <input type="hidden" name="action" value="request-decide">
+          <input type="hidden" name="id" value="{{ r.id }}">
+          <input type="hidden" name="decision" value="approve">
+          <button type="submit" class="z-btn is-sm">Approve</button>
+        </form>
+        <form method="post" action="{{ base_url }}endpoints" class="z-ep-decline">
+          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+          <input type="hidden" name="action" value="request-decide">
+          <input type="hidden" name="id" value="{{ r.id }}">
+          <input type="hidden" name="decision" value="decline">
+          <input name="reason" class="z-input" maxlength="{{ reason_max }}" placeholder="Why (they see this)" aria-label="Why it is declined" required>
+          <button type="submit" class="z-btn is-quiet is-sm">Decline</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="z-ep-small" style="margin-top:0">None waiting.</p>
+    {% endif %}
+    {% if access.recent %}
+    <details class="z-ep-section">
+      <summary>Recently decided</summary>
+      <div class="z-table-wrap">
+        <table class="z-table">
+          <thead><tr><th>User</th><th>Decision</th><th>By</th><th>When (UTC)</th></tr></thead>
+          <tbody>
+            {% for r in access.recent %}
+            <tr>
+              <td>{{ r.username }}</td>
+              <td>{% if r.status == 'approved' %}<span class="z-pill is-ok">approved</span>{% else %}<span class="z-pill is-bad">declined</span> {{ r.reason }}{% endif %}</td>
+              <td>{{ r.decided_by }}</td>
+              <td>{{ when(r.decided) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
   {# "not set up": this hub has no gateway yet, so endpoints are presented as
      coming; anything else from the gateway is a passing fault. #}
   {% set not_setup = unavailable and 'not set up' in unavailable %}
@@ -67,7 +123,7 @@ runpod.serverless.start({"handler": handler})</div>
     <h2>No endpoints yet</h2>
     <p class="z-empty" style="text-align:left">An endpoint is a folder in your home with a <code>handler.py</code>, run on the GPU size you choose.
       Write and test the handler in your server, then
-      {%- if can_create %} create the endpoint below{% else %} ask an administrator to create the endpoint{% endif %}.</p>
+      {%- if can_create %} create the endpoint below{% elif catalog.sv_creators_group %} ask for access below{% else %} ask an administrator to create the endpoint{% endif %}.</p>
     <div class="z-pre">import zai_serverless as runpod     # or: import runpod
 
 def handler(job):
@@ -173,25 +229,29 @@ print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-cop
       {% else %}
       <p class="z-ep-small">No jobs in the last 30 minutes.</p>
       {% endif %}
-      <div class="z-ep-actions">
-        {% if h.jobs.inQueue %}
-        <form method="post" action="{{ base_url }}endpoints">
-          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
-          <input type="hidden" name="action" value="purge">
-          <input type="hidden" name="endpoint" value="{{ e.id }}">
-          <button type="submit" class="z-btn is-quiet is-sm">Remove {{ h.jobs.inQueue }} queued job{{ 's' if h.jobs.inQueue != 1 }}</button>
-        </form>
-        {% endif %}
-        {% if user.admin or (can_create and e.owner == user.name) %}
-        <form method="post" action="{{ base_url }}endpoints" data-confirm="Delete {{ e.name }}? Queued and running jobs are cancelled. The handler files are kept.">
-          <input type="hidden" name="_xsrf" value="{{ xsrf }}">
-          <input type="hidden" name="action" value="delete">
-          <input type="hidden" name="endpoint" value="{{ e.id }}">
-          <button type="submit" class="z-btn is-danger is-sm">Delete endpoint</button>
-        </form>
-        {% endif %}
-      </div>
     </details>
+
+    {# Outside Recent jobs, which is folded shut when there are none. #}
+    {% if h.jobs.inQueue or user.admin or (can_create and e.owner == user.name) %}
+    <div class="z-ep-actions">
+      {% if h.jobs.inQueue %}
+      <form method="post" action="{{ base_url }}endpoints">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="purge">
+        <input type="hidden" name="endpoint" value="{{ e.id }}">
+        <button type="submit" class="z-btn is-quiet is-sm">Remove {{ h.jobs.inQueue }} queued job{{ 's' if h.jobs.inQueue != 1 }}</button>
+      </form>
+      {% endif %}
+      {% if user.admin or (can_create and e.owner == user.name) %}
+      <form method="post" action="{{ base_url }}endpoints" data-confirm="Delete {{ e.name }}? Queued and running jobs are cancelled. The handler files are kept.">
+        <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="endpoint" value="{{ e.id }}">
+        <button type="submit" class="z-btn is-danger is-sm">Delete endpoint</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
   </section>
   {% endfor %}
 
@@ -257,6 +317,35 @@ print(r.json())</div><button type="button" class="z-btn is-quiet is-sm" data-cop
       </div>
       <div><button type="submit" class="z-btn is-block">Create</button></div>
     </form>
+  </section>
+  {% elif catalog.sv_creators_group and not unavailable %}
+  {# Not allowed to create yet: ask (hub-ext/zai_platform.py, eq_*). #}
+  {% set mine = access.mine %}
+  <section class="z-card" id="request">
+    {% if mine and mine.status == 'pending' %}
+    <h2>Your request is waiting</h2>
+    <p class="z-ep-small" style="margin-top:0">You asked on {{ when(mine.created) }} UTC. An administrator will look at it; the answer shows here.</p>
+    <form method="post" action="{{ base_url }}endpoints">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <input type="hidden" name="action" value="request-cancel">
+      <button type="submit" class="z-btn is-quiet is-sm">Cancel request</button>
+    </form>
+    {% else %}
+    <h2>Want to create your own endpoints?</h2>
+    {% if mine and mine.status == 'declined' %}
+    <p class="z-alert is-warn" role="status">Your last request was declined on {{ when(mine.decided) }} UTC: {{ mine.reason }}</p>
+    {% endif %}
+    <p class="z-ep-small" style="margin-top:0">Ask an administrator. Once approved you create up to {{ catalog.sv_max_endpoints }} endpoints in your home, paid from your credit while a worker runs.</p>
+    <form method="post" action="{{ base_url }}endpoints" style="display:grid;gap:1rem">
+      <input type="hidden" name="_xsrf" value="{{ xsrf }}">
+      <input type="hidden" name="action" value="request">
+      <div class="z-field">
+        <label for="r-note">What will you run? (optional)</label>
+        <textarea id="r-note" name="note" class="z-input" rows="3" maxlength="{{ note_max }}" placeholder="For example: speech-to-text for our call centre app, on GPU · 18 GB"></textarea>
+      </div>
+      <div><button type="submit" class="z-btn">Request access</button></div>
+    </form>
+    {% endif %}
   </section>
   {% endif %}
 </div>

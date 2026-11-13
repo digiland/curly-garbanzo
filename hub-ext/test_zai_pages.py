@@ -58,6 +58,7 @@ class Case(unittest.TestCase):
             "page.html": "{% block main %}{% endblock %}{% block script %}{% endblock %}",
             name: open(os.path.join(REPO, "templates", name)).read()}))
         cat = zai_platform.CATALOG
+        variables.setdefault("access", {"mine": None, "pending": [], "recent": []})
         return env.get_template(name).render(
             base_url="/hub/", xsrf="X", catalog=cat, money=cat.money, rate_str=cat.rate_str,
             when=zai_platform._when, dur=zai_platform._dur, size_name=zai_platform._size_name, **variables)
@@ -357,7 +358,12 @@ class SelfServiceEndpoints(Case):
     def test_non_member_is_told_to_ask(self):
         page = self.page(self.member(groups=()))
         self.assertNotIn('id="create"', page)
+        self.assertIn("ask for access below", page)
+        self.assertIn('value="request"', page)
+        zai_platform.CATALOG.sv_creators_group = ""        # admin-only hub: nothing to ask for
+        page = self.page(self.member(groups=()))
         self.assertIn("ask an administrator to create the endpoint", page)
+        self.assertNotIn('value="request"', page)
 
     def test_admin_still_picks_the_owner(self):
         admin = self.member(groups=())
@@ -366,9 +372,280 @@ class SelfServiceEndpoints(Case):
         self.assertIn('name="owner"', page)
         self.assertIn("Folder in their home", page)
 
+    def test_delete_shows_with_no_recent_jobs(self):
+        page = self.page(self.member(), [self.endpoint("tendai")])
+        self.assertIn("No jobs in the last 30 minutes", page)
+        self.assertGreater(page.index('value="delete"'), page.rindex("</details>"))   # not folded away
+
     def test_member_deletes_only_their_own(self):
         self.assertIn('value="delete"', self.page(self.member(), [self.endpoint("tendai")]))
         self.assertNotIn('value="delete"', self.page(self.member(groups=()), [self.endpoint("tendai")]))
+
+
+class FlashHandler:
+    """Enough of a BaseHandler for the POST side of Endpoints and Billing: body
+    arguments in, signed cookies and a redirect or a render out."""
+    SECRET = "s" * 32
+
+    def __init__(self, user, body=None, cookies=None):
+        self.current_user, self.body, self.cookies = user, body or {}, dict(cookies or {})
+        self.hub = types.SimpleNamespace(base_url="/hub/")
+        self.log = types.SimpleNamespace(info=lambda *a: None)
+        self.db = types.SimpleNamespace(query=lambda m: types.SimpleNamespace(
+            filter_by=lambda **k: types.SimpleNamespace(first=lambda: object())))
+        self.redirected, self.rendered = None, None
+
+    def get_body_argument(self, name, default=None):
+        return self.body.get(name, default)
+
+    def _set_cookie(self, key, value, **kw):
+        from tornado.web import create_signed_value
+        self.cookies[key] = create_signed_value(self.SECRET, key, value).decode()
+
+    def get_cookie(self, key):
+        return self.cookies.get(key)
+
+    def get_secure_cookie(self, key, max_age_days=31):
+        from tornado.web import decode_signed_value
+        return decode_signed_value(self.SECRET, key, self.cookies.get(key), max_age_days=max_age_days)
+
+    def clear_cookie(self, key, **kw):
+        self.cookies.pop(key, None)
+
+    def redirect(self, url):
+        self.redirected = url
+
+    async def get(self, message="", error=""):
+        self.rendered = {"message": message or zai_platform.take_flash(self), "error": error}
+
+
+class NoRepeatOnReload(Case):
+    """After a POST that changed something the browser is sent to a GET, so
+    reloading the page doesn't queue the job or add the top-up again."""
+
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+
+        async def gateway(user, method, path, body=None):
+            self.sent.append((method, path))
+            return {"id": "4b021fb2-0000-0000-0000-000000000000"}
+        self._gateway, zai_platform.gateway = zai_platform.gateway, gateway
+
+    def tearDown(self):
+        zai_platform.gateway = self._gateway
+
+    def post(self, cls, user, body, cookies=None):
+        import asyncio
+        h = FlashHandler(user, body, cookies)
+        h._admin = lambda: None
+        asyncio.run(cls.post(h))
+        return h
+
+    def test_send_job_redirects_and_the_message_shows_once(self):
+        h = self.post(zai_platform.EndpointsPage, person(),
+                      {"action": "run", "endpoint": "yops5sh2btvu", "input": '{"hi": 1}'})
+        self.assertEqual(h.redirected, "/hub/endpoints")
+        self.assertIsNone(h.rendered)
+        self.assertEqual(self.sent, [("POST", "/v2/yops5sh2btvu/run")])
+        self.assertEqual(zai_platform.take_flash(h), "Job 4b021fb2 queued. It appears under Recent jobs.")
+        self.assertEqual(zai_platform.take_flash(h), "")       # a second reload: no message, no job
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_failed_action_renders_in_place(self):
+        h = self.post(zai_platform.EndpointsPage, person(),
+                      {"action": "run", "endpoint": "yops5sh2btvu", "input": "{hi"})
+        self.assertIsNone(h.redirected)
+        self.assertIn("not valid JSON", h.rendered["error"])
+        self.assertEqual(self.sent, [])
+
+    def test_top_up_redirects_and_a_reload_adds_nothing(self):
+        h = self.post(zai_platform.BillingHandler, person("boss", admin=True),
+                      {"username": "tendai", "kind": "topup", "amount": "5", "note": "uat"})
+        self.assertEqual(h.redirected, "/hub/billing")
+        self.assertIn("$5.00 added to tendai", zai_platform.take_flash(h))
+        with zai_platform._db() as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM ledger WHERE kind='topup'").fetchone()[0], 1)
+
+    def test_an_old_or_forged_message_is_ignored(self):
+        from unittest import mock
+        h = FlashHandler(person())
+        zai_platform.flash_redirect(h, "endpoints", "hello")
+        with mock.patch("tornado.web.time.time", return_value=time.time() + 600):
+            self.assertEqual(zai_platform.take_flash(h), "")
+        self.assertEqual(zai_platform.take_flash(FlashHandler(person(), cookies={"zai-flash": "hello"})), "")
+
+
+class AccessRequests(Case):
+    """A user asks to create endpoints; an admin approves (they join
+    creators_group in the hub database) or declines with a reason."""
+
+    def setUp(self):
+        super().setUp()
+        from jupyterhub import orm
+        self.hdb = orm.new_session_factory("sqlite:///:memory:")()
+        for name, admin in (("tendai", False), ("boss", True)):
+            self.hdb.add(orm.User(name=name, admin=admin))
+        self.hdb.commit()
+        self.sent = []
+        self._notify = zai_platform.eq_notify
+        zai_platform.eq_notify = lambda db, kind, req: self.sent.append((kind, req["username"], req.get("reason", "")))
+
+    def tearDown(self):
+        zai_platform.eq_notify = self._notify
+        self.hdb.close()
+
+    def user(self, name):
+        from jupyterhub import orm
+        return orm.User.find(self.hdb, name)
+
+    def post(self, name, body):
+        import asyncio
+        h = FlashHandler(self.user(name), body)
+        h.db = self.hdb
+        asyncio.run(zai_platform.EndpointsPage.post(h))
+        return h
+
+    def rows(self):
+        with zai_platform._db() as con:
+            return [dict(r) for r in con.execute("SELECT * FROM zai_endpoint_requests ORDER BY id")]
+
+    def decide(self, rid, decision, reason="", by="boss"):
+        return self.post(by, {"action": "request-decide", "id": str(rid), "decision": decision, "reason": reason})
+
+    def page(self, name):
+        u = self.user(name)
+        return self.render("endpoints.html", user=u, endpoints=[], unavailable="", spend={}, message="",
+                           error="", public_host="h", users=[], now_ms=0, form={},
+                           can_create=zai_platform.can_create_endpoints(u),
+                           access=zai_platform.eq_view(u.name, u.admin), note_max=500, reason_max=300)
+
+    def test_ask_once_and_admins_hear(self):
+        h = self.post("tendai", {"action": "request", "note": "  speech to text  "})
+        self.assertEqual(h.redirected, "/hub/endpoints")
+        self.assertEqual([(r["username"], r["status"], r["note"]) for r in self.rows()],
+                         [("tendai", "pending", "speech to text")])
+        self.assertEqual(self.sent, [("asked", "tendai", "")])
+        again = self.post("tendai", {"action": "request", "note": ""})
+        self.assertIn("already have a request waiting", again.rendered["error"])
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_no_request_when_already_allowed_or_admin_only(self):
+        self.assertIn("already create", self.post("boss", {"action": "request"}).rendered["error"])
+        zai_platform.CATALOG.sv_creators_group = ""
+        self.assertIn("Only administrators", self.post("tendai", {"action": "request"}).rendered["error"])
+        self.assertEqual(self.rows(), [])
+
+    def test_note_too_long(self):
+        self.assertIn("500 characters", self.post("tendai", {"action": "request", "note": "x" * 501}).rendered["error"])
+
+    def test_cancel_then_ask_again(self):
+        self.post("tendai", {"action": "request"})
+        self.post("tendai", {"action": "request-cancel"})
+        self.post("tendai", {"action": "request"})
+        self.assertEqual([r["status"] for r in self.rows()], ["cancelled", "pending"])
+
+    def test_approve_adds_them_to_the_group_once(self):
+        self.post("tendai", {"action": "request"})
+        self.assertFalse(zai_platform.can_create_endpoints(self.user("tendai")))
+        h = self.decide(self.rows()[0]["id"], "approve")
+        self.assertEqual(h.redirected, "/hub/endpoints")
+        self.assertTrue(zai_platform.can_create_endpoints(self.user("tendai")))
+        self.assertEqual(self.rows()[0]["status"], "approved")
+        self.assertEqual(self.rows()[0]["decided_by"], "boss")
+        self.assertIn(("approved", "tendai", ""), self.sent)
+        again = self.decide(self.rows()[0]["id"], "approve")
+        self.assertIn("already approved", again.rendered["error"])
+
+    def test_a_failed_group_change_leaves_the_request_waiting(self):
+        self.post("tendai", {"action": "request"})
+        rid = self.rows()[0]["id"]
+        self.hdb.delete(self.user("tendai"))
+        self.hdb.commit()
+        self.assertIn("no user 'tendai'", self.decide(rid, "approve").rendered["error"])
+        self.assertEqual(self.rows()[0]["status"], "pending")
+
+    def test_decline_needs_a_reason_the_user_sees(self):
+        self.post("tendai", {"action": "request"})
+        rid = self.rows()[0]["id"]
+        self.assertIn("Say why", self.decide(rid, "decline", "  ").rendered["error"])
+        self.decide(rid, "decline", "Use the shared demo endpoint for now")
+        self.assertEqual(self.rows()[0]["status"], "declined")
+        self.assertIn(("declined", "tendai", "Use the shared demo endpoint for now"), self.sent)
+        self.assertFalse(zai_platform.can_create_endpoints(self.user("tendai")))
+        page = self.page("tendai")
+        self.assertIn("was declined", page)
+        self.assertIn("Use the shared demo endpoint for now", page)
+        self.assertIn('value="request"', page)          # may ask again
+
+    def test_only_admins_decide(self):
+        from tornado.web import HTTPError
+        self.post("tendai", {"action": "request"})
+        with self.assertRaises(HTTPError) as cm:
+            self.decide(self.rows()[0]["id"], "approve", by="tendai")
+        self.assertEqual(cm.exception.status_code, 403)
+
+    def test_pages(self):
+        page = self.page("tendai")
+        self.assertIn("Want to create your own endpoints?", page)
+        self.assertIn("ask for access below", page)
+        self.assertNotIn('id="create"', page)
+        self.post("tendai", {"action": "request", "note": "whisper <b>api</b>"})
+        page = self.page("tendai")
+        self.assertIn("Your request is waiting", page)
+        self.assertIn('value="request-cancel"', page)
+        admin = self.page("boss")
+        self.assertIn('id="requests"', admin)
+        self.assertIn("whisper &lt;b&gt;api&lt;/b&gt;", admin)
+        self.assertIn('value="approve"', admin)
+        self.assertIn('href="/hub/authorize#tendai"', admin)
+        self.assertEqual(zai_platform.eq_pending_count(self.user("boss")), 1)
+        self.assertEqual(zai_platform.eq_pending_count(self.user("tendai")), 0)
+        self.decide(self.rows()[0]["id"], "approve")
+        self.assertIn('id="create"', self.page("tendai"))
+        self.assertIn("Recently decided", self.page("boss"))
+        self.assertEqual(zai_platform.eq_pending_count(self.user("boss")), 0)
+
+    def test_emails_go_through_the_reset_mailer_when_it_is_on(self):
+        import asyncio
+        from nativeauthenticator.orm import UserInfo
+        UserInfo.__table__.create(self.hdb.get_bind(), checkfirst=True)
+        for name in ("tendai", "boss"):
+            self.hdb.add(UserInfo(username=name, email=f"{name}@example.org", password=b"x"))
+        self.hdb.commit()
+        mail = []
+
+        async def send(to, subject, text):
+            mail.append((to, subject, text))
+        rs = types.SimpleNamespace(_RS={"on": False, "public": "https://hub.example"}, _rs_send=send)
+        saved, sys.modules["zai_reset"] = sys.modules.get("zai_reset"), rs
+        try:
+            async def run(kind, req):
+                self._notify(self.hdb, kind, req)
+                await asyncio.sleep(0)
+            asyncio.run(run("asked", {"username": "tendai", "note": "whisper"}))
+            self.assertEqual(mail, [])                       # mail off: nothing, no error
+            rs._RS["on"] = True
+            asyncio.run(run("asked", {"username": "tendai", "note": "whisper"}))
+            asyncio.run(run("declined", {"username": "tendai", "reason": "not yet"}))
+        finally:
+            if saved is None:
+                sys.modules.pop("zai_reset", None)
+            else:
+                sys.modules["zai_reset"] = saved
+        self.assertEqual([m[0] for m in mail], ["boss@example.org", "tendai@example.org"])
+        self.assertIn("https://hub.example/hub/endpoints#requests", mail[0][2])
+        self.assertIn("whisper", mail[0][2])
+        self.assertIn("not yet", mail[1][2])
+
+    def test_nav_count(self):
+        env = Environment(autoescape=True, loader=DictLoader({
+            "templates/page.html": "{% block nav_bar_left_items %}{% endblock %}{% block login_widget %}{% endblock %}",
+            "page.html": open(os.path.join(REPO, "templates", "page.html")).read()}))
+        boss = types.SimpleNamespace(name="boss", admin=True, active=False)
+        nav = env.get_template("page.html").render(base_url="/hub/", user=boss, zai_serverless=True,
+                                                    zai_endpoint_requests=2, logout_url="", login_url="")
+        self.assertIn('href="/hub/endpoints#requests">Endpoints <span class="z-nav-balance">(2)</span>', nav)
 
 
 if __name__ == "__main__":
