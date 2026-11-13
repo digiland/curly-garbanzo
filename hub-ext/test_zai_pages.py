@@ -63,6 +63,21 @@ class Case(unittest.TestCase):
             when=zai_platform._when, dur=zai_platform._dur, size_name=zai_platform._size_name, **variables)
 
 
+class Money(Case):
+    """Amounts under half a cent would read $0.00; they show what was charged."""
+
+    def test_amounts(self):
+        m = zai_platform.CATALOG.money
+        self.assertEqual(m(0), "$0.00")
+        self.assertEqual(m(12_345_678), "$12.35")
+        self.assertEqual(m(-50_000), "-$0.05")
+        self.assertEqual(m(5_000), "$0.01")
+        self.assertEqual(m(4_000), "$0.004")         # 4 minutes of a $0.06/h worker
+        self.assertEqual(m(-170), "-$0.0002")        # 10 seconds of one
+        self.assertEqual(m(40), "<$0.0001")
+        self.assertEqual(m(-40), "-<$0.0001")
+
+
 class StartPicker(Case):
     def form(self, user=None):
         return zai_platform.options_form(types.SimpleNamespace(user=user or person()))
