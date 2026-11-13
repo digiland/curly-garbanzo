@@ -172,7 +172,11 @@ class Catalog:
 
     def money(self, micros):
         sign = "-" if micros < 0 else ""
-        return f"{sign}{self.symbol}{abs(micros) / MICROS:,.2f}"
+        v = abs(micros) / MICROS
+        if 0 < v < 0.005:       # would read $0.00: a short worker or session still cost something
+            s = f"{v:.4f}".rstrip("0")
+            return f"{sign}{self.symbol}{s}" if s != "0." else f"{sign}<{self.symbol}0.0001"
+        return f"{sign}{self.symbol}{v:,.2f}"
 
     def rate_str(self, micros_per_hour):
         v = micros_per_hour / MICROS
