@@ -710,6 +710,25 @@ def can_create_endpoints(user):
     return user.admin or bool(g and any(x.name == g for x in user.groups))
 
 
+FLASH_COOKIE = "zai-flash"
+
+
+def flash_redirect(handler, page, message):
+    """After a change worked: send the browser to a plain GET of the page, so a
+    reload shows it again instead of repeating the change (queueing another job,
+    adding another top-up). The message rides along in a signed cookie."""
+    handler._set_cookie(FLASH_COOKIE, message, path=handler.hub.base_url)
+    handler.redirect(handler.hub.base_url + page)
+
+
+def take_flash(handler):
+    """The message flash_redirect left, once; "" if none or older than 5 minutes."""
+    raw = handler.get_secure_cookie(FLASH_COOKIE, max_age_days=5 / 1440)
+    if handler.get_cookie(FLASH_COOKIE) is not None:
+        handler.clear_cookie(FLASH_COOKIE, path=handler.hub.base_url)
+    return raw.decode() if raw else ""
+
+
 class EndpointsPage(BaseHandler):
     """GET/POST /hub/endpoints -- serverless endpoints: how to call them, their
     queue, workers and recent jobs. Owners send test jobs and cancel; admins
@@ -721,6 +740,8 @@ class EndpointsPage(BaseHandler):
     @web.authenticated
     async def get(self, message="", error=""):
         user = self.current_user
+        if not (message or error):
+            message = take_flash(self)
         endpoints, unavailable = [], ""
         try:
             listed = await gateway(user, "GET", "/v2/endpoints" + ("?all=1" if user.admin else ""))
@@ -789,9 +810,9 @@ class EndpointsPage(BaseHandler):
             else:
                 raise web.HTTPError(400, "unknown action")
         except GatewayError as ex:
-            return await self.get(error=str(ex))
+            return await self.get(error=str(ex))     # rendered here, so the create form keeps what was typed
         self.log.info("endpoints: %s %s %s", user.name, action, ep)
-        await self.get(message=msg)
+        flash_redirect(self, "endpoints", msg)
 
     @staticmethod
     def _create_body(f):
@@ -845,6 +866,8 @@ class BillingHandler(BaseHandler):
     @web.authenticated
     async def get(self, message="", error=""):
         self._admin()
+        if not (message or error):
+            message = take_flash(self)
         only = self.get_argument("user", "")
         now = time.time()
         month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -903,7 +926,7 @@ class BillingHandler(BaseHandler):
             return await self.get(error=str(ex))
         self.log.info("billing: %s %s %s for %s (%s)", self.current_user.name, kind,
                       CATALOG.money(micros), username, note)
-        await self.get(message=f"{CATALOG.money(micros)} added to {username}. New balance {CATALOG.money(bal)}.")
+        flash_redirect(self, "billing", f"{CATALOG.money(micros)} added to {username}. New balance {CATALOG.money(bal)}.")
 
 
 class UsageHandler(BaseHandler):
