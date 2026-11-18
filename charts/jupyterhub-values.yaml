@@ -152,6 +152,11 @@ hub:
     SMTP_SECURITY:
       valueFrom:
         secretKeyRef: {name: outgoing-mail, key: smtp-security, optional: true}
+    # Where new access requests are emailed (hub-ext/zai_access.py). Empty
+    # emails every admin with an address on their account.
+    SIGNUP_NOTIFY_EMAIL:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: notify-email, optional: true}
     # Optional: pay for credit online through Econet's Eco Payments API
     # (Sasai, card, EcoCash; hub-ext/zai_payments.py, docs/PAYMENTS.md). Off
     # unless the client id and secret are set.
