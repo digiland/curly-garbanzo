@@ -5,6 +5,14 @@
 # scheduler actually reserves. See docs/OPERATIONS.md for the sizing arithmetic.
 
 hub:
+  # Platform pods must survive a full disk (2026-11-11 outage: the kubelet
+  # evicted the hub and proxy too, so a full disk took the whole site down).
+  # Critical pods are never evicted, and the toleration lets them be scheduled
+  # while the node reports disk pressure. Notebooks stay evictable.
+  extraPodSpec:
+    priorityClassName: system-cluster-critical
+  tolerations:
+    - {key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule}
   # Let a user grant a colleague access to their own running server -- JupyterHub
   # 5's native sharing, and the closest safe equivalent to Colab's "share this
   # notebook". Deliberately NOT jupyter-collaboration: that package's extension
@@ -398,6 +406,15 @@ hub:
       c.JupyterHub.tornado_settings = _ts
 
 proxy:
+  chp:
+    # Platform pods must survive a full disk (2026-11-11 outage: the kubelet
+    # evicted the hub and proxy too, so a full disk took the whole site down).
+    # Critical pods are never evicted, and the toleration lets them be scheduled
+    # while the node reports disk pressure. Notebooks stay evictable.
+    extraPodSpec:
+      priorityClassName: system-cluster-critical
+    tolerations:
+      - {key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule}
   service:
     type: ClusterIP                 # servicelb is disabled; cloudflared reaches this in-cluster
 
@@ -463,7 +480,7 @@ singleuser:
   # not available from local-path.
   storage:
     type: dynamic
-    capacity: 10Gi                  # enforced by XFS project quota, see scripts/07
+    capacity: 100Gi                # per-user cap, enforced by scripts/13-disk-guard.sh
     dynamic:
       storageClass: local-path      # k3s built-in provisioner
     extraVolumes:
