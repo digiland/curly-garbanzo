@@ -7,6 +7,7 @@ supplies the catalog's sizes. It needs the hub's packages:
     pip install jupyterhub jupyterhub-nativeauthenticator==1.2.0 pyyaml
     cd hub-ext && python3 -m unittest -v test_zai_access
 """
+import asyncio
 import datetime
 import importlib
 import json
@@ -20,7 +21,7 @@ import yaml
 from jinja2 import DictLoader, Environment
 from jupyterhub import orm
 from nativeauthenticator import NativeAuthenticator
-from nativeauthenticator.handlers import SignUpHandler
+from nativeauthenticator.handlers import SignUpHandler, ToggleAuthorizationHandler
 from nativeauthenticator.orm import UserInfo
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -42,6 +43,7 @@ _ORIGINALS = {
     (SignUpHandler, "render_template"): SignUpHandler.render_template,
     (NativeAuthenticator, "delete_user"): NativeAuthenticator.delete_user,
     (NativeAuthenticator, "get_handlers"): NativeAuthenticator.get_handlers,
+    (ToggleAuthorizationHandler, "get"): ToggleAuthorizationHandler.get,
 }
 
 INDIVIDUAL = {
@@ -376,6 +378,152 @@ class Pages(Case):
                            users=self.db.query(UserInfo).all())
         self.assertNotIn("request form", page)
         self.assertNotIn("<details>", page)
+
+    def test_signup_page_promises_an_email_only_when_one_is_sent(self):
+        done = dict(ask_email=True, alert="alert-info", result_message="", **self.page_vars)
+        self.assertIn("We'll email you when it's done.", self.render("signup.html", zai_reset_on=True, **done))
+        page = self.render("signup.html", zai_reset_on=False, **done)
+        self.assertNotIn("We'll email you", page)
+        self.assertIn("Nothing to do until then.", page)
+
+    def test_the_notice_address_is_deployed_with_the_outgoing_mail(self):
+        env = VALUES["hub"]["extraEnv"]["SIGNUP_NOTIFY_EMAIL"]["valueFrom"]["secretKeyRef"]
+        self.assertEqual((env["name"], env["key"]), ("outgoing-mail", "notify-email"))
+        deploy = open(os.path.join(REPO, "scripts", "05-jupyterhub.sh")).read()
+        self.assertIn('--from-literal=notify-email="${SIGNUP_NOTIFY_EMAIL:-}"', deploy)
+
+
+class Notices(Case):
+    """The emails about a request: to the admins when it arrives, to the
+    person when it is approved. zai_reset's outgoing mail is a stand-in."""
+
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+
+        async def sender(to, subject, text):
+            self.sent.append((to, subject, text))
+        self.mail = {"on": True, "public": "https://zai.example", "sender": sender}
+        self.real_reset = sys.modules.get("zai_reset")
+        sys.modules["zai_reset"] = types.SimpleNamespace(_RS=self.mail)
+        self.ns["configure"](Config(JupyterHub={"template_vars": {}}),
+                             env={"SIGNUP_NOTIFY_EMAIL": "admin@zai.example"})
+
+    def tearDown(self):
+        if self.real_reset is None:
+            sys.modules.pop("zai_reset", None)
+        else:
+            sys.modules["zai_reset"] = self.real_reset
+        super().tearDown()
+
+    async def delivered(self):
+        await asyncio.gather(*list(self.ns["_AR_MAIL_TASKS"]))
+        return self.sent
+
+    async def toggle(self, username):
+        """Click Approve (or Revoke) on /hub/authorize."""
+        handler = object.__new__(ToggleAuthorizationHandler)
+        handler.application = types.SimpleNamespace(
+            settings={"authenticator": self.auth, "db": self.db})
+
+        async def original(_self, slug):   # NativeAuthenticator's, past its admin check
+            UserInfo.change_authorization(_self.db, slug)
+        self.ns["_ar_toggle_get"] = original
+        await ToggleAuthorizationHandler.get(handler, username)
+
+    def make_admin(self, name, email):
+        self.db.add(orm.User(name=name, admin=True))
+        self.db.commit()
+        self.auth.create_user(name, f"{name}-password-1", email=email)
+
+    async def test_a_new_request_is_emailed_to_the_notice_address(self):
+        await self.submit(dict(ACCOUNT, **ORGANISATION))
+        [(to, subject, text)] = await self.delivered()
+        self.assertEqual((to, subject), ("admin@zai.example", "New access request: tendai"))
+        self.assertIn("Kumusha Labs (Pvt) Ltd asked for access", text)
+        self.assertIn("Applying as: Organisation\n", text)
+        self.assertIn("Project: Clinic triage\n", text)
+        self.assertIn("Expected GPU hours a month: 30\n", text)
+        self.assertIn("https://zai.example/hub/authorize#tendai", text)
+
+    async def test_without_a_notice_address_every_admin_with_an_email_is_told(self):
+        self.ns["_ar_notify"]["to"] = ""
+        self.make_admin("boss", "boss@zai.example")
+        self.make_admin("deputy", "BOSS@zai.example")    # the same mailbox, told once
+        self.make_admin("noemail", "")
+        await self.submit(dict(ACCOUNT, **INDIVIDUAL))
+        sent = await self.delivered()
+        self.assertEqual([to for to, _, _ in sent], ["boss@zai.example"])
+        self.assertIn("Tendai Moyo asked for access", sent[0][2])
+
+    async def test_a_newline_in_an_answer_stays_on_its_line(self):
+        await self.submit(dict(ACCOUNT, **dict(INDIVIDUAL, project_name="Triage\nApplying as: Admin")))
+        [(_, _, text)] = await self.delivered()
+        self.assertIn("Project: Triage Applying as: Admin\n", text)
+        self.assertEqual(text.count("\nApplying as:"), 1)
+
+    async def test_no_email_when_no_account_was_created(self):
+        await self.submit(dict(INDIVIDUAL, **ACCOUNT, phone=""))                 # refused form
+        await self.submit(dict(ACCOUNT, **INDIVIDUAL))
+        self.assertEqual(len(await self.delivered()), 1)
+        self.sent.clear()
+        await self.submit(dict(ACCOUNT, **ORGANISATION))                         # taken username
+        await self.submit(dict(ACCOUNT, **dict(INDIVIDUAL, username="weak"),
+                               signup_password="short", signup_password_confirmation="short"))
+        self.assertEqual(await self.delivered(), [])
+
+    async def test_no_email_for_an_account_approved_as_it_is_created(self):
+        self.auth.admin_users = {"tendai"}
+        await self.submit(dict(ACCOUNT, **INDIVIDUAL))
+        self.assertTrue(UserInfo.find(self.db, "tendai").is_authorized)
+        self.assertEqual(await self.delivered(), [])
+
+    async def test_no_email_when_the_self_approval_link_covers_it(self):
+        self.auth.allow_self_approval_for = r"^[^@]+@zai\.example$"
+        self.auth.secret_key = "s" * 32
+        self.auth.send_approval_email = lambda dest, url: None
+        await self.submit(dict(ACCOUNT, **INDIVIDUAL))
+        self.assertEqual(await self.delivered(), [])
+
+    async def test_no_email_without_outgoing_mail(self):
+        self.mail["on"] = False
+        await self.submit(dict(ACCOUNT, **INDIVIDUAL))
+        await self.toggle("tendai")
+        self.assertTrue(UserInfo.find(self.db, "tendai").is_authorized)
+        self.assertEqual(await self.delivered(), [])
+
+    async def test_approving_emails_the_person_and_revoking_does_not(self):
+        self.auth.create_user("tendai", "tendai-password-1", email="tendai@zai.example")
+        await self.toggle("tendai")
+        [(to, subject, text)] = await self.delivered()
+        self.assertEqual((to, subject), ("tendai@zai.example", "Your ZAI Compute account is approved"))
+        self.assertIn("Hello tendai,", text)
+        self.assertIn("https://zai.example/hub/login", text)
+        self.sent.clear()
+        await self.toggle("tendai")                                              # Revoke
+        self.assertFalse(UserInfo.find(self.db, "tendai").is_authorized)
+        self.assertEqual(await self.delivered(), [])
+
+    async def test_approving_someone_without_an_email_sends_nothing(self):
+        self.auth.create_user("tendai", "tendai-password-1", email="")
+        await self.toggle("tendai")
+        self.assertTrue(UserInfo.find(self.db, "tendai").is_authorized)
+        self.assertEqual(await self.delivered(), [])
+
+    async def test_a_failed_send_is_logged_not_raised(self):
+        async def broken(to, subject, text):
+            raise OSError("connection refused")
+        self.mail["sender"] = broken
+        with self.assertLogs(level="ERROR") as logs:
+            await self.submit(dict(ACCOUNT, **INDIVIDUAL))
+            await self.delivered()
+        self.assertIn("signup notice: email could not be sent: OSError", logs.output[0])
+
+    def test_a_notice_address_that_is_not_an_email_falls_back_to_the_admins(self):
+        with self.assertLogs(level="ERROR"):
+            self.ns["configure"](Config(JupyterHub={"template_vars": {}}),
+                                 env={"SIGNUP_NOTIFY_EMAIL": "admin at zai"})
+        self.assertEqual(self.ns["_ar_notify"]["to"], "")
 
 
 if __name__ == "__main__":
