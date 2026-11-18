@@ -23,6 +23,13 @@ stores a hash). It is used for the calls below and never written anywhere.
                   sign-in uses. With no token it offers to sign in again
                   (templates/caimex.html), or sends the user to the Caimex
                   login when that would not help
+  change password on the hub's Change password page, which has the old
+                  password: sign in to Caimex with it, change it there to
+                  the new one, and sign in with that. Forgot-password and
+                  admin resets have no old password, and Caimex takes no
+                  other way to set one, so its password stays as it was;
+                  Open Caimex then says so and offers Reconnect for once
+                  the user has made the two the same
 
 The service account (an Admin of the organisation, two-factor OFF) is needed
 because only a member can create invitations and set spending caps, and
@@ -50,6 +57,7 @@ from decimal import Decimal
 import sqlalchemy as sa
 from jupyterhub.handlers import BaseHandler
 from nativeauthenticator import NativeAuthenticator
+from nativeauthenticator.handlers import ChangePasswordHandler
 from nativeauthenticator.orm import UserInfo
 from tornado import web
 from tornado.escape import xhtml_escape
@@ -76,7 +84,8 @@ _CX_TOKEN_SECONDS = 23 * 3600
 #               invited  the address already had an account; invitation sent
 #               failed   see detail; tried again at the next sign-in
 #   auto_login  false once Caimex has refused the hub password for this
-#               user, so the hub stops knocking on their account
+#               user, so the hub stops knocking on their account; true
+#               again when they choose Reconnect or the hub changes it
 _cx_table = sa.Table(
     "zai_caimex_accounts", sa.MetaData(),
     sa.Column("username", sa.Unicode(255), primary_key=True),
@@ -115,6 +124,16 @@ def _cx_set(db, username, email, status, detail="", auto_login=True):
             username=username, email=email, status=status, detail=detail[:600],
             auto_login=auto_login,
             updated_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+def _cx_retry_login(db, username):
+    """Let the next sign-in try the user's Caimex account again."""
+    try:
+        db.execute(_cx_table.update().where(_cx_table.c.username == username)
+                   .values(auto_login=True))
         db.commit()
     except Exception:
         db.rollback()
@@ -280,6 +299,83 @@ async def _cx_sign_in(username, password):
             pass
 
 
+async def _cx_change_password(username, old, new):
+    """After the user changed their password on the Change password page:
+    change their Caimex password too. Returns "changed" (Caimex takes the
+    new one now), "different" (their Caimex password was not the old one,
+    or two-factor is on there: left alone), "failed" (Caimex did not
+    answer as expected) or None (no Caimex account yet). Never raises."""
+    db = _cx["db"]
+    if db is None:
+        return "failed"
+    try:
+        status, _, auto_login = _cx_get(db, username)
+        info = UserInfo.find(db, username)
+        email = (info.email or "").strip().lower() if info else ""
+        if status not in ("created", "invited") or not email:
+            return None         # no account yet: the next sign-in makes it
+        code, data = await _cx_fetch(
+            "/api/auth/login", {"email": email, "password": old})
+        if code == 200 and data.get("access_token"):
+            code, data = await _cx_fetch(
+                "/api/auth/change-password",
+                {"current_password": old, "new_password": new}, data["access_token"])
+            if code == 200:
+                _cx_sessions.pop(username, None)    # Caimex ended it
+            else:
+                get_logger().warning("caimex password for %s not changed: %s",
+                                     username, _cx_reason(code, data))
+        elif code not in (200, 401):
+            return "failed"
+        # Whatever happened above: the new password works there if Caimex
+        # has just taken it, or if the user had already set it there.
+        code, data = await _cx_fetch(
+            "/api/auth/login", {"email": email, "password": new})
+        if code == 200 and data.get("access_token"):
+            _cx_keep(username, data["access_token"])
+            if not auto_login:
+                _cx_retry_login(db, username)
+            return "changed"
+        if code in (200, 401):
+            _cx_set(db, username, email, status, auto_login=False)
+            return "different"
+        return "failed"
+    except Exception as e:
+        get_logger().error("caimex password for %s: %s", username, type(e).__name__)
+        return "failed"
+
+
+_na_change_post = None           # the original, captured by configure()
+
+
+@web.authenticated
+async def _change_password_post(self):
+    """NativeAuthenticator's Change password, then the same change in Caimex.
+    The page tells the user how Caimex went (caimex_password)."""
+    user = await self.get_current_user()
+    outcome = None
+    if _CX_ON and user is not None:
+        old = self.get_body_argument("old_password", "", strip=False)
+        new = self.get_body_argument("new_password", "", strip=False)
+        again = self.get_body_argument("new_password_confirmation", "", strip=False)
+        info = self.authenticator.get_user(user.name)
+        # NativeAuthenticator's own checks, so Caimex changes only when the
+        # hub's change below goes through.
+        if (info is not None and new != old and new == again
+                and self.authenticator.is_password_strong(new)
+                and info.is_valid_password(old)):
+            task = asyncio.ensure_future(_cx_change_password(user.name, old, new))
+            # Open Caimex waits for it, as for a sign-in.
+            if user.name not in _cx_running:
+                _cx_running[user.name] = task
+                task.add_done_callback(lambda _t, name=user.name: _cx_running.pop(name, None))
+            done, _ = await asyncio.wait([task], timeout=15)
+            outcome = task.result() if done else "failed"
+    render = self.render_template
+    self.render_template = lambda name, **ns: render(name, caimex_password=outcome, **ns)
+    return await _na_change_post(self)
+
+
 _na_authenticate = None          # the original, captured by configure()
 
 
@@ -426,16 +522,18 @@ class OpenCaimex(BaseHandler):
             return
         # No session. The hub only gets one when a password is typed, so
         # a hub restart or a day-old tab leaves a signed-in user without
-        # it. If typing the password again would fix that, say so, once;
-        # otherwise (their own Caimex password or two-factor, or we just
-        # tried) Caimex's own login is the right place.
+        # it. If typing the password again would fix that, say so, once.
+        # If Caimex refused their password (a different one there, after a
+        # reset here, or two-factor), say that, with Reconnect for once they
+        # match. Straight after a try, Caimex's own login is the right place.
         status, _, auto_login = _cx_get(self.db, name)
-        if (status in ("created", "invited") and auto_login
-                and not self.get_argument("tried", "")):
+        if status in ("created", "invited") and not self.get_argument("tried", ""):
+            again = self.hub.base_url + "caimex/again"
             html = await self.render_template(
                 "caimex.html",
-                again_url=self.hub.base_url + "caimex/again",
-                caimex_url=_CX_WEB + landing)
+                again_url=again + ("" if auto_login else "?reconnect=1"),
+                caimex_url=_CX_WEB + landing,
+                differs=not auto_login)
             self.finish(html)
         else:
             self.redirect(_CX_WEB + landing)
@@ -447,6 +545,9 @@ class OpenCaimexAgain(BaseHandler):
 
     @web.authenticated
     async def get(self):
+        # Reconnect: the user says their Caimex password is this one now.
+        if self.get_argument("reconnect", "") and _CX_ON:
+            _cx_retry_login(self.db, self.current_user.name)
         self.clear_login_cookie()
         self.redirect(self.hub.base_url + "login?" + urllib.parse.urlencode(
             {"next": self.hub.base_url + "caimex?tried=1"}))
@@ -483,7 +584,7 @@ def _cx_status(username):
 def configure(c):
     global _CX_URL, _CX_WEB, _CX_ORG, _CX_EMAIL, _CX_PASSWORD, _CX_ON
     global _CX_ALLOWANCE, _CX_SWEEP_SECONDS
-    global _na_authenticate, _na_get_handlers_cx
+    global _na_authenticate, _na_get_handlers_cx, _na_change_post
     _CX_URL = os.environ.get("CAIMEX_API_URL", "").strip().rstrip("/")
     _CX_WEB = os.environ.get("CAIMEX_WEB_URL", "").strip().rstrip("/")
     _CX_ORG = os.environ.get("CAIMEX_ORG_ID", "").strip()
@@ -529,6 +630,9 @@ def configure(c):
         _na_get_handlers_cx = NativeAuthenticator.get_handlers
         NativeAuthenticator.authenticate = _authenticate
         NativeAuthenticator.get_handlers = _get_handlers_cx
+    if _na_change_post is None:
+        _na_change_post = ChangePasswordHandler.post
+        ChangePasswordHandler.post = _change_password_post
 
     # JupyterHub CALLS any callable in template_vars with the current user and
     # hands the template the result, so a function meant for the template to
@@ -537,4 +641,6 @@ def configure(c):
     tv["caimex_on"] = _CX_ON
     tv["caimex_allowance"] = _cx_money(_CX_ALLOWANCE) if _CX_ON and _CX_ALLOWANCE else None
     tv["caimex_status"] = lambda user: _cx_status
+    # For the pages that tell a user to set their Caimex password there.
+    tv["caimex_forgot_url"] = _CX_WEB + "/forgot-password" if _CX_ON else ""
     c.JupyterHub.template_vars = tv

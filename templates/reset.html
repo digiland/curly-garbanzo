@@ -35,7 +35,9 @@
       </div>
       <p class="z-alert is-ok" role="status">Your new password works now. Every device that was signed in has been signed out, and your API tokens have been revoked.</p>
       <p class="aside">Anything that uses a token, such as the <code>zai</code> command or serverless endpoints, needs a new one from the Token page.</p>
-      <p class="aside">Your Caimex password hasn't changed. If Open Caimex asks you to sign in, use your Caimex password, or Caimex's own "forgot password".</p>
+      {% if caimex_on is defined and caimex_on %}
+      <p class="aside">Your Caimex password hasn't changed. To keep opening Caimex straight from here, set it to this new password with Caimex's <a href="{{ caimex_forgot_url }}">forgot password</a>, then choose Reconnect when Open Caimex asks.</p>
+      {% endif %}
       <a class="z-btn is-block" href="{{ base_url }}login">Sign in</a>
     {% elif not username %}
       <div>

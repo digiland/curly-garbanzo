@@ -5,6 +5,14 @@
 # scheduler actually reserves. See docs/OPERATIONS.md for the sizing arithmetic.
 
 hub:
+  # Platform pods must survive a full disk (2026-11-11 outage: the kubelet
+  # evicted the hub and proxy too, so a full disk took the whole site down).
+  # Critical pods are never evicted, and the toleration lets them be scheduled
+  # while the node reports disk pressure. Notebooks stay evictable.
+  extraPodSpec:
+    priorityClassName: system-cluster-critical
+  tolerations:
+    - {key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule}
   # Let a user grant a colleague access to their own running server -- JupyterHub
   # 5's native sharing, and the closest safe equivalent to Colab's "share this
   # notebook". Deliberately NOT jupyter-collaboration: that package's extension
@@ -152,6 +160,11 @@ hub:
     SMTP_SECURITY:
       valueFrom:
         secretKeyRef: {name: outgoing-mail, key: smtp-security, optional: true}
+    # Where new access requests are emailed (hub-ext/zai_access.py). Empty
+    # emails every admin with an address on their account.
+    SIGNUP_NOTIFY_EMAIL:
+      valueFrom:
+        secretKeyRef: {name: outgoing-mail, key: notify-email, optional: true}
     # Optional: pay for credit online through Econet's Eco Payments API
     # (Sasai, card, EcoCash; hub-ext/zai_payments.py, docs/PAYMENTS.md). Off
     # unless the client id and secret are set.
@@ -246,10 +259,11 @@ hub:
       # NativeAuthenticator's native-login.html honours announcement_login; its
       # signup.html has no announcement hook, so signup guidance lives in the
       # footer block of our page.html instead.
+      # The lockout (allowed_failed_logins above) is not described here: the
+      # security assessment (finding 1.2) asked that its limits not be shown.
       c.JupyterHub.template_vars = {
           "announcement_login":
-              'No account yet? <a href="signup">Request access</a>. '
-              'Sign-in locks for 15 minutes after 5 failed attempts.',
+              'No account yet? <a href="signup">Request access</a>.',
       }
     # Self-service approval by email. NativeAuthenticator ships this, but its
     # send_approval_email() calls smtplib.SMTP_SSL(), which talks port 465 --
@@ -359,7 +373,48 @@ hub:
           "/v2/": "http://serverless-gateway.jupyterhub.svc.cluster.local:8080",
       }
 
+    05-security-headers: |
+      # Security assessment, November 2026 (findings 1.4 and 1.5). These cover
+      # the hub's own pages; HSTS, HTTPS-only and TLS 1.2+ are set in Cloudflare.
+      _ts = dict(c.JupyterHub.get("tornado_settings", {}) or {})
+      _ts["headers"] = {
+          **_ts.get("headers", {}),
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY",   # same as JupyterHub's own frame-ancestors 'none'
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+          # Report-only: browsers log what it would block and block nothing.
+          # JupyterHub's enforced policy (frame-ancestors 'none') still applies.
+          # Inline scripts and styles are in every template; the outside
+          # sources are Google Fonts and reCAPTCHA on the signup page.
+          "Content-Security-Policy-Report-Only": "; ".join([
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com",
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              "font-src 'self' https://fonts.gstatic.com",
+              "img-src 'self' data:",
+              "frame-src https://www.google.com",
+              "connect-src 'self'",
+              "base-uri 'self'",
+              "frame-ancestors 'none'",
+          ]),
+      }
+      # The hub sees plain http from the Cloudflare tunnel, so JupyterHub would
+      # not mark its cookies Secure by itself. The _xsrf cookie gets these too;
+      # it stays readable by script on purpose, as JupyterHub's pages send it back.
+      _ts["cookie_options"] = {**_ts.get("cookie_options", {}), "secure": True, "samesite": "Lax"}
+      c.JupyterHub.tornado_settings = _ts
+
 proxy:
+  chp:
+    # Platform pods must survive a full disk (2026-11-11 outage: the kubelet
+    # evicted the hub and proxy too, so a full disk took the whole site down).
+    # Critical pods are never evicted, and the toleration lets them be scheduled
+    # while the node reports disk pressure. Notebooks stay evictable.
+    extraPodSpec:
+      priorityClassName: system-cluster-critical
+    tolerations:
+      - {key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule}
   service:
     type: ClusterIP                 # servicelb is disabled; cloudflared reaches this in-cluster
 
@@ -425,7 +480,7 @@ singleuser:
   # not available from local-path.
   storage:
     type: dynamic
-    capacity: 10Gi                  # enforced by XFS project quota, see scripts/07
+    capacity: 100Gi                # per-user cap, enforced by scripts/13-disk-guard.sh
     dynamic:
       storageClass: local-path      # k3s built-in provisioner
     extraVolumes:

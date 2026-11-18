@@ -90,8 +90,10 @@ templates:
     image: REGISTRY_PLACEHOLDER/zai-comfyui:cuda12-r3
     gpu_required: true
     default_url: /comfyui/
+    opens: ComfyUI
   - slug: vllm
     name: "vLLM inference server"
-    description: "OpenAI-compatible LLM serving on port 8000."
+    description: "OpenAI-compatible LLM serving. Opens in JupyterLab, where you start a model with zai-vllm."
+    next_step: "Open a terminal in JupyterLab and run zai-vllm with a model name. It answers on port 8000, at /user/<you>/proxy/8000/v1."
     image: REGISTRY_PLACEHOLDER/zai-vllm:cuda12-r3
     gpu_required: true

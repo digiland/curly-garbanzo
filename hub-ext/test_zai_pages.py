@@ -59,9 +59,25 @@ class Case(unittest.TestCase):
             name: open(os.path.join(REPO, "templates", name)).read()}))
         cat = zai_platform.CATALOG
         variables.setdefault("access", {"mine": None, "pending": [], "recent": []})
+        variables.setdefault("zai_template", cat.template_of)
         return env.get_template(name).render(
             base_url="/hub/", xsrf="X", catalog=cat, money=cat.money, rate_str=cat.rate_str,
             when=zai_platform._when, dur=zai_platform._dur, size_name=zai_platform._size_name, **variables)
+
+
+class Money(Case):
+    """Amounts under half a cent would read $0.00; they show what was charged."""
+
+    def test_amounts(self):
+        m = zai_platform.CATALOG.money
+        self.assertEqual(m(0), "$0.00")
+        self.assertEqual(m(12_345_678), "$12.35")
+        self.assertEqual(m(-50_000), "-$0.05")
+        self.assertEqual(m(5_000), "$0.01")
+        self.assertEqual(m(4_000), "$0.004")         # 4 minutes of a $0.06/h worker
+        self.assertEqual(m(-170), "-$0.0002")        # 10 seconds of one
+        self.assertEqual(m(40), "<$0.0001")
+        self.assertEqual(m(-40), "-<$0.0001")
 
 
 class StartPicker(Case):
@@ -74,27 +90,27 @@ class StartPicker(Case):
         self.assertEqual(sizes, [z["slug"] for z in zai_platform.CATALOG.sizes])
         tpls = re.findall(r'name="template" value="([^"]+)"', html)
         self.assertEqual(tpls, [t["slug"] for t in zai_platform.CATALOG.templates])
-        self.assertEqual(zai_platform.options_from_form({"profile": ["gpu-18"], "template": ["vllm"]}),
-                         {"profile": "gpu-18", "template": "vllm"})
+        self.assertEqual(zai_platform.options_from_form({"profile": ["gpu-35"], "template": ["vllm"]}),
+                         {"profile": "gpu-35", "template": "vllm"})
 
     def test_cards_show_price_hardware_and_the_recommended_size(self):
         html = self.form()
-        self.assertIn("<b>$1.25</b><span>/ hour incl. VAT</span>", html)
+        self.assertIn("<b>$2.50</b><span>/ hour incl. VAT</span>", html)
         self.assertIn("<b>$0.06</b><span>/ hour incl. VAT</span>", html)
-        self.assertIn("RAM<b>12 GB</b>", html)
+        self.assertIn("RAM<b>48 GB</b>", html)
         self.assertIn("RAM<b>24 GB</b>", html)
         self.assertEqual(html.count("Recommended"), 1)
-        self.assertIn('value="gpu-18" data-templates="pytorch comfyui vllm"', html)
+        self.assertIn('value="gpu-35" data-templates="pytorch comfyui vllm"', html)
 
     def test_free_slices_and_a_full_size(self):
-        self.assertIn('H200 slices free</span><b>7 of 7</b>', self.form())
+        self.assertIn('H200 35 GB slices free</span><b>2 of 2</b>', self.form())
         with zai_platform._db() as con:
-            for _ in range(7):
+            for _ in range(2):
                 con.execute("INSERT INTO sessions(username, server, started, gpu, resource, gpus)"
-                            " VALUES ('x', '', ?, 1, 'nvidia.com/gpu', 1)", (time.time(),))
+                            " VALUES ('x', '', ?, 1, 'nvidia.com/mig-2g.35gb', 1)", (time.time(),))
         html = self.form()
-        self.assertIn("<b>0 of 7</b>", html)
-        self.assertRegex(html, r'value="gpu-18"[^>]*disabled')
+        self.assertIn("<b>0 of 2</b>", html)
+        self.assertRegex(html, r'value="gpu-35"[^>]*disabled')
         self.assertIn(">Full<", html)
 
     def test_a_pool_without_a_label_is_called_gpu_slices(self):
@@ -109,7 +125,7 @@ class StartPicker(Case):
         html = self.form()
         self.assertIn('data-balance="20000000"', html)
         self.assertIn('data-money="$20.00"', html)
-        self.assertIn('data-rate="1250000"', html)
+        self.assertIn('data-rate="2500000"', html)
         self.assertIn("z-summary", open(os.path.join(REPO, "templates", "spawn.html")).read())
 
     def test_free_admin_sees_free(self):
@@ -142,14 +158,14 @@ class AccountOverview(Case):
         self.credit(20 * MICROS)
         page = self.account()
         self.assertIn("$20.00", page)
-        self.assertIn("About <strong>16 hours</strong> on GPU · 18 GB", page)       # $20 at $1.25
+        self.assertIn("About <strong>8.0 hours</strong> on GPU · 35 GB", page)        # $20 at $2.50
 
     def test_running_server_card(self):
         with zai_platform._db() as con:
             con.execute("INSERT INTO sessions(username, server, started, gpu, size, rate)"
-                        " VALUES ('tendai', '', ?, 1, 'gpu-18', 1320000)", (time.time() - 1800,))
+                        " VALUES ('tendai', '', ?, 1, 'gpu-35', 1320000)", (time.time() - 1800,))
         page = self.account(person(running=True))
-        self.assertIn("GPU · 18 GB", page)
+        self.assertIn("GPU · 35 GB", page)
         self.assertIn("30m", page)
         self.assertIn('href="/user/tendai/"', page)
         self.assertNotIn("Nothing running", page)
@@ -189,16 +205,16 @@ class Home(Case):
     def test_stopped_lists_sizes_with_hours_and_links_to_the_picker(self):
         self.credit(20 * MICROS)
         page = self.page()
-        self.assertIn('href="/hub/spawn#gpu-18"', page)
-        self.assertIn("<b>$1.25</b><span>/ hour incl. VAT</span>", page)
-        self.assertIn("covers about <strong>16 hours</strong>", page)
+        self.assertIn('href="/hub/spawn#gpu-35"', page)
+        self.assertIn("<b>$2.50</b><span>/ hour incl. VAT</span>", page)
+        self.assertIn("covers about <strong>8.0 hours</strong>", page)
         self.assertIn('id="start"', page)
         self.assertNotIn('id="stop"', page)
 
     def test_running_shows_the_session_and_keeps_the_stop_button(self):
         with zai_platform._db() as con:
             con.execute("INSERT INTO sessions(username, server, started, gpu, size, rate)"
-                        " VALUES ('tendai', '', ?, 1, 'gpu-18', 1320000)", (time.time() - 600,))
+                        " VALUES ('tendai', '', ?, 1, 'gpu-35', 1320000)", (time.time() - 600,))
         page = self.page(active=True)
         self.assertIn("10m", page)
         self.assertIn("$1.32/h incl. VAT", page)
@@ -216,6 +232,68 @@ class Home(Case):
                            default_server=types.SimpleNamespace(active=False, ready=False))
         self.assertIn('id="start"', page)
         self.assertNotIn("spawn#", page)
+
+
+class TemplateNames(Case):
+    """Buttons and the starting page name what the server opens (QAT: ComfyUI
+    and vLLM servers were offered as "Open JupyterLab")."""
+
+    def running_home(self, template=None):
+        opts = {"profile": "gpu-18", **({"template": template} if template else {})}
+        server = types.SimpleNamespace(active=True, ready=True, user_options=opts)
+        return self.render("home.html", user=person(running=True), url="/user/tendai/",
+                           default_server=server, zai_home=zai_myusage._mu_home(person(running=True)))
+
+    def test_template_of_a_server(self):
+        of = zai_platform.CATALOG.template_of
+        self.assertEqual(of(types.SimpleNamespace(user_options={"template": "comfyui"}))["opens"], "ComfyUI")
+        self.assertEqual(of(types.SimpleNamespace(user_options={}))["slug"], "pytorch")
+        self.assertEqual(of(types.SimpleNamespace(user_options={"template": "gone"}))["slug"], "pytorch")
+        self.assertEqual(of(None)["slug"], "pytorch")
+
+    def test_home_opens_comfyui(self):
+        page = self.running_home("comfyui")
+        self.assertIn(">Open ComfyUI</a>", page)
+        self.assertIn("with ComfyUI", page)
+        self.assertNotIn("JupyterLab", page)
+
+    def test_home_says_how_to_start_vllm(self):
+        page = self.running_home("vllm")
+        self.assertIn(">Open JupyterLab</a>", page)
+        self.assertIn("with vLLM inference server", page)
+        self.assertIn("run zai-vllm with a model name", page)
+        self.assertIn("/user/&lt;you&gt;/proxy/8000/v1", page)
+
+    def test_home_default_template(self):
+        page = self.running_home()
+        self.assertIn(">Open JupyterLab</a>", page)
+        self.assertIn("with PyTorch + JupyterLab", page)
+        self.assertNotIn("zai-vllm", page)
+
+    def test_account_opens_comfyui(self):
+        user = person(running=True)
+        user.spawner = types.SimpleNamespace(user_options={"template": "comfyui"})
+        with zai_platform._db() as con:
+            acct = zai_platform.account(con, user.name)
+        page = self.render("account.html", user=user, acct=acct, history=[], free={}, admin_free=False,
+                           public_host="h", now=time.time(), two_factor=False)
+        self.assertIn(">Open ComfyUI</a>", page)
+
+    def test_starting_page_names_where_it_goes(self):
+        def starting(opts):
+            return self.render("spawn_pending.html", user=person(), progress_url="/p",
+                               spawner=types.SimpleNamespace(user_options=opts))
+        self.assertIn("taken to ComfyUI as soon", starting({"template": "comfyui"}))
+        self.assertIn("taken to JupyterLab as soon", starting({"template": "vllm"}))
+        self.assertIn("taken to JupyterLab as soon", starting({}))
+
+    def test_start_bar_summary_is_found_after_the_form(self):
+        # #z-summary comes after the form in spawn.html, so the script must
+        # look it up when it runs, not when the form's script is parsed.
+        html = zai_platform.options_form(types.SimpleNamespace(user=person()))
+        script = html[html.index("<script>"):]
+        self.assertGreater(script.index("getElementById('z-summary')"), script.index("function sync()"))
+        self.assertIn("DOMContentLoaded", script)
 
 
 class Token(Case):

@@ -72,6 +72,10 @@ spec:
         hub.jupyter.org/network-access-hub: "true"   # the hub's NetworkPolicy admits only labelled pods
     spec:
       serviceAccountName: serverless-gateway
+      # Survive a full disk; see charts/jupyterhub-values.yaml (hub).
+      priorityClassName: system-cluster-critical
+      tolerations:
+        - {key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule}
       enableServiceLinks: false     # else Kubernetes injects HUB_PORT=tcp://... and the like
       securityContext:
         runAsNonRoot: true

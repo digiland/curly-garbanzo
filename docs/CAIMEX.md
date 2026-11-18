@@ -98,8 +98,19 @@ password, and it keeps sessions in memory.
 | Situation | What the user sees |
 |---|---|
 | The hub restarted, or the sign-in is older than 23 hours | A page offering **Sign in again**. After that, Caimex opens signed in |
-| Their Caimex password differs from the one here, or they turned on two-factor in Caimex | The Caimex sign-in page. The hub tries their password once, then stops |
-| The email already had a Caimex account with a different password | The Caimex sign-in page |
+| Their Caimex password differs from the one here, or they turned on two-factor in Caimex | A page saying so, with **Sign in to Caimex** and **Reconnect**. The hub tries their password once, then stops until they choose Reconnect |
+| The email already had a Caimex account with a different password | The same page |
+
+**Reconnect** is for once the user has made their Caimex password the same
+as this one (Caimex's own "forgot password" can set it). It signs them out
+here; their next sign-in tries Caimex again.
+
+## Changing a password
+
+| How the password changes here | Caimex |
+|---|---|
+| **Change password** page (old and new password typed) | Changed too: the hub signs in to Caimex with the old password, changes it to the new one, and signs in with that. The page says how it went. Left alone if their Caimex password was not the old one, or two-factor is on there |
+| **Forgot password** link, or an administrator sets it | Not changed. The hub has no old password, and Caimex takes no other way to set a member's password. The reset page and the admin page say so, and Open Caimex offers Reconnect |
 
 Two-factor on this site does not affect any of this. Two-factor on a user's
 Caimex account does: they sign in to Caimex themselves from then on.
@@ -131,8 +142,9 @@ Caimex account does: they sign in to Caimex themselves from then on.
   Every user of this site joins the same organization.
 - **Two Caimex emails reach each new user:** "verify your email", and an
   invitation the hub has already accepted for them. The signup page says so.
-- **Passwords start the same and then drift.** Changing one does not change
-  the other.
+- **Passwords start the same and can drift.** A change on the Change
+  password page carries over to Caimex; a reset here, or any change made in
+  Caimex, does not.
 - **Caimex limits sign-ins and registrations to 30 per 15 minutes from one
   address.** All of the hub's calls come from one address, so more than about
   30 people signing in within 15 minutes will see some delayed until their

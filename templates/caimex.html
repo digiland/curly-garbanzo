@@ -1,7 +1,8 @@
 {% extends "page.html" %}
 {# Shown by /hub/caimex (hub-ext/zai_caimex.py) when the hub holds no
-   Caimex session for this user: after a hub restart, or on a tab older than a
-   day. The handler passes again_url and caimex_url. #}
+   Caimex session for this user: after a hub restart, on a tab older than a
+   day, or when Caimex refused their password here (differs). The handler
+   passes again_url, caimex_url and differs. #}
 
 {% block title %}Open Caimex · ZAI Notebooks{% endblock %}
 
@@ -10,15 +11,24 @@
   <div class="z-page-head">
     <div>
       <div class="z-eyebrow">Caimex</div>
-      <h1>Sign in again to open Caimex</h1>
+      <h1>{% if differs %}Your Caimex password is different{% else %}Sign in again to open Caimex{% endif %}</h1>
     </div>
   </div>
   <div class="z-card">
+    {% if differs %}
+    <p>Caimex didn't accept your ZAI password, so Caimex can't open from here without a second sign-in. This happens after a password reset here, or if you set a different password or two-factor in Caimex.</p>
+    <p>Sign in to Caimex with your Caimex password. To open it straight from here again, make your Caimex password the same as this one{% if caimex_forgot_url %} (Caimex's <a href="{{ caimex_forgot_url }}">forgot password</a> can set it){% endif %}, then choose Reconnect and sign in here once more.</p>
+    <div style="display:flex;gap:.75rem;flex-wrap:wrap">
+      <a class="z-btn" role="button" href="{{ caimex_url }}">Sign in to Caimex</a>
+      <a class="z-btn is-quiet" role="button" href="{{ again_url }}">Reconnect</a>
+    </div>
+    {% else %}
     <p>Opening Caimex without a second sign-in needs a fresh sign-in here first. Yours has been open a while, or the service restarted since. Your server and files are not affected.</p>
     <div style="display:flex;gap:.75rem;flex-wrap:wrap">
       <a class="z-btn" role="button" href="{{ again_url }}">Sign in again</a>
       <a class="z-btn is-quiet" role="button" href="{{ caimex_url }}">Use the Caimex sign-in page</a>
     </div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
