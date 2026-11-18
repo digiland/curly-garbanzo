@@ -11,7 +11,8 @@
     <div>
       <div class="z-eyebrow">{{ user.name }}</div>
       <h1>Your server is starting</h1>
-      <p>Usually about fifteen seconds. You'll be taken to JupyterLab as soon as it's ready.</p>
+      {% set tpl = zai_template(spawner) if zai_template is defined and spawner is defined else None %}
+      <p>Usually about fifteen seconds. You'll be taken to {{ tpl.opens if tpl else "JupyterLab" }} as soon as it's ready.</p>
     </div>
   </div>
   <div class="z-card">

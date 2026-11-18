@@ -60,6 +60,9 @@ server's `.env` (see `.env.example`):
 | `SMTP_PORT`, `SMTP_SECURITY` | `587` with `starttls` (most providers), or `465` with `ssl` |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | The mailbox's sign-in. For Gmail and Microsoft 365 this is usually an app password, not the account password |
 
+The same settings send the signup notices in `docs/ACCESS-REQUESTS.md`, and
+`SIGNUP_NOTIFY_EMAIL` says where new requests go.
+
 Then run `scripts/05-jupyterhub.sh`, which stores them in the `outgoing-mail`
 secret (a run without `SMTP_HOST` and `MAIL_FROM` keeps the existing one),
 and restart the hub. The log says `password reset: on, links to …, sent by …`

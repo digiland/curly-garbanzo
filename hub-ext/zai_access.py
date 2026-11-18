@@ -16,12 +16,19 @@ account.
 The form's lists and the consent wording live in this file and reach the
 template as `access_form`, so there is one copy of each. Without this module
 there is no `access_form` and the signup page is the plain three-field form.
+
+A new request is emailed to SIGNUP_NOTIFY_EMAIL, or without it to every admin
+with an email address, and an approval to the person approved. Both go out
+through zai_reset's outgoing mail; without it nothing is sent, and admins find
+new requests on /hub/authorize as before.
 """
-import datetime, json, re
+import asyncio, datetime, json, os, re, sys
 
 import sqlalchemy as sa
+from jupyterhub import orm
 from nativeauthenticator import NativeAuthenticator
-from nativeauthenticator.handlers import SignUpHandler
+from nativeauthenticator.handlers import SignUpHandler, ToggleAuthorizationHandler
+from nativeauthenticator.orm import UserInfo
 from tornado import web
 from traitlets.log import get_logger
 
@@ -213,6 +220,81 @@ def _ar_forget(db, username):
         raise
 
 
+# -- telling people -------------------------------------------------
+_ar_notify = {"to": ""}          # SIGNUP_NOTIFY_EMAIL, set by configure()
+_AR_MAIL_TASKS = set()           # holds each background send until it is done
+
+
+def _ar_mail():
+    """zai_reset's mail state when it can send, else None."""
+    rs = sys.modules.get("zai_reset")
+    return rs._RS if rs is not None and rs._RS["on"] else None
+
+
+def _ar_send(to, subject, text):
+    """Email each address in the background: a slow mail server must not
+    hold up the page. Failures are logged and go no further."""
+    mail = _ar_mail()
+    if mail is None:
+        return
+
+    async def send(addr):
+        try:
+            await mail["sender"](addr, subject, text)
+        except Exception as e:
+            get_logger().error("signup notice: email could not be sent: %s", type(e).__name__)
+    for addr in to:
+        t = asyncio.ensure_future(send(addr))
+        _AR_MAIL_TASKS.add(t)
+        t.add_done_callback(_AR_MAIL_TASKS.discard)
+
+
+def _ar_line(value):
+    """One line of an applicant's text: a newline in an answer must not
+    pass for a line of our own."""
+    return " ".join(str(value).split())
+
+
+def _ar_admin_addresses(db):
+    if _ar_notify["to"]:
+        return [_ar_notify["to"]]
+    seen = {}
+    for user in db.query(orm.User).filter_by(admin=True):
+        info = UserInfo.find(db, user.name)
+        email = (info.email or "").strip() if info else ""
+        if email:
+            seen.setdefault(email.lower(), email)
+    return list(seen.values())
+
+
+def _ar_tell_admins(db, username, answers):
+    to = _ar_admin_addresses(db)
+    if not to:
+        get_logger().warning("signup notice: no admin has an email address, nobody was told about %s", username)
+        return
+    org = answers.get("applicant_type") == "organisation"
+    sector = answers.get("sector", "")
+    if sector == "Other":
+        sector = "Other: " + str(answers.get("sector_other", ""))
+    text = (f"{_ar_line(answers.get('org_name') if org else answers.get('full_name'))} "
+            "asked for access to ZAI Compute.\n\n"
+            f"Username: {username}\n"
+            f"Applying as: {_AR_TYPES.get(answers.get('applicant_type'), '')}\n"
+            f"Project: {_ar_line(answers.get('project_name', ''))}\n"
+            f"Sector: {_ar_line(sector)}\n"
+            f"Expected GPU hours a month: {answers.get('gpu_hours', '')}\n\n"
+            "Read the whole application and approve or discard it at\n"
+            f"{_ar_mail()['public']}/hub/authorize#{username}\n\nZAI Compute\n")
+    _ar_send(to, f"New access request: {username}", text)
+
+
+def _ar_tell_approved(username, email):
+    text = (f"Hello {username},\n\nYour ZAI Compute account is approved. Sign in at\n"
+            f"{_ar_mail()['public']}/hub/login\n"
+            "with your username and the password you chose when you signed up.\n\nZAI Compute\n")
+    _ar_send([email], "Your ZAI Compute account is approved", text)
+
+
 # -- signup ---------------------------------------------------------
 _ar_signup_post = None           # the originals, captured by configure()
 _ar_signup_render = None
@@ -263,6 +345,29 @@ async def _signup_post(self):
     except Exception as e:
         get_logger().error("access request for %s not saved: %s",
                            username, type(e).__name__)
+    # Admins are told about a request that waits for them: not one approved
+    # on creation (an admin's own), nor one the self-approval email covers.
+    info = UserInfo.find(self.db, username)
+    if _ar_mail() is None or info is None or info.is_authorized:
+        return
+    if auth.allow_self_approval_for and re.match(auth.allow_self_approval_for, info.email or ""):
+        return
+    _ar_tell_admins(self.db, username, answers)
+
+
+# -- approval -------------------------------------------------------
+# NativeAuthenticator's Approve and Revoke are one link, /hub/authorize/<user>,
+# that flips the account; only a flip to approved is worth an email.
+_ar_toggle_get = None            # the original, captured by configure()
+
+
+async def _toggle_authorization(self, slug):
+    before = UserInfo.find(self.db, slug)
+    was_approved = bool(before and before.is_authorized)
+    await _ar_toggle_get(self, slug)
+    info = UserInfo.find(self.db, slug)
+    if _ar_mail() and info and info.is_authorized and not was_approved and info.email:
+        _ar_tell_approved(info.username, info.email)
 
 
 # An application goes when its account does: Discard on /hub/authorize,
@@ -302,8 +407,19 @@ def _ar_for(username):
         return None
 
 
-def configure(c):
-    global _ar_signup_post, _ar_signup_render, _ar_delete_user, _na_get_handlers_ar
+def configure(c, env=os.environ):
+    global _ar_signup_post, _ar_signup_render, _ar_delete_user, _na_get_handlers_ar, _ar_toggle_get
+    log = get_logger()
+    to = (env.get("SIGNUP_NOTIFY_EMAIL") or "").strip()
+    if to and not _AR_EMAIL.match(to):
+        log.error("SIGNUP_NOTIFY_EMAIL is not an email address, telling the admins instead")
+        to = ""
+    _ar_notify["to"] = to
+    if _ar_mail():
+        log.info("signup notices: on, new requests to %s", to or "every admin with an email address")
+    else:
+        log.info("signup notices are OFF: no outgoing mail (see password reset)")
+
     # The sizes a server can be started with, from the platform catalog when
     # it is loaded; the field still works, with just "unsure", without it.
     sizes = {}
@@ -321,10 +437,12 @@ def configure(c):
         _ar_signup_post, _ar_signup_render = SignUpHandler.post, SignUpHandler.render_template
         _ar_delete_user = NativeAuthenticator.delete_user
         _na_get_handlers_ar = NativeAuthenticator.get_handlers
+        _ar_toggle_get = ToggleAuthorizationHandler.get
         SignUpHandler.post = _signup_post
         SignUpHandler.render_template = _signup_render
         NativeAuthenticator.delete_user = _delete_user
         NativeAuthenticator.get_handlers = _get_handlers_ar
+        ToggleAuthorizationHandler.get = _toggle_authorization
 
     # access_request is wrapped because JupyterHub calls any callable in
     # template_vars with the current user and hands the template the result.

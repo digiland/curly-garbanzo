@@ -55,14 +55,14 @@ class Case(unittest.TestCase):
         zai_platform.CATALOG = zai_platform.Catalog.load()
         zai_platform.init_db()
 
-    def session(self, started, stopped, size="gpu-18", rate=GPU, user="tendai", kind="notebook"):
+    def session(self, started, stopped, size="gpu-35", rate=GPU, user="tendai", kind="notebook"):
         gpu = size.startswith("gpu")
         with zai_platform._db() as con:
             con.execute(
                 "INSERT INTO sessions(username, server, profile, gpu, started, stopped, kind, size, template,"
                 " resource, gpus, rate, charged) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (user, "", size, int(gpu), started, stopped, kind, size, "pytorch",
-                 "nvidia.com/gpu" if gpu else "", int(gpu), rate, int(stopped is not None)))
+                 "nvidia.com/mig-2g.35gb" if gpu else "", int(gpu), rate, int(stopped is not None)))
 
     def credit(self, when, micros, kind="topup", user="tendai"):
         with zai_platform._db() as con:
@@ -100,7 +100,7 @@ class Report(Case):
         sessions, sizes, t = self.report(self.SINCE, self.UNTIL)
         self.assertEqual((t["gpu_secs"], t["cpu_secs"], t["sessions"]), (2 * HOUR, HOUR, 2))
         self.assertEqual(t["cost"], 2 * GPU + CPU)
-        self.assertEqual([s["size"] for s in sessions], ["CPU only", "GPU · 18 GB"])   # newest first
+        self.assertEqual([s["size"] for s in sessions], ["CPU only", "GPU · 35 GB"])   # newest first
 
     def test_session_crossing_the_start_counts_only_its_part_inside(self):
         self.session(ts(2026, 9, 30, 23), ts(2026, 10, 1, 1))     # 1 h before, 1 h inside
@@ -132,7 +132,7 @@ class Report(Case):
         self.session(ts(2026, 10, 7, 9), ts(2026, 10, 7, 9, 30), kind="worker")
         _, sizes, _ = self.report(self.SINCE, self.UNTIL)
         self.assertEqual([(z["size"], z["sessions"]) for z in sizes],
-                         [("CPU only", 1), ("GPU · 18 GB", 1), ("Serverless · GPU · 18 GB", 1)])
+                         [("CPU only", 1), ("GPU · 35 GB", 1), ("Serverless · GPU · 35 GB", 1)])
 
     def test_credit_added_in_the_period(self):
         self.credit(ts(2026, 10, 2), 25 * MICROS)

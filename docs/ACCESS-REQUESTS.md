@@ -48,6 +48,28 @@ Organisation, about 30 GPU hours a month". Click it to read the whole applicatio
 An account created before this form existed, or by `claim-admin.sh`, shows
 "No request form on file".
 
+## Who is told
+
+Once outgoing mail is set up (the same settings as password reset,
+`docs/PASSWORD-RESET.md`), two emails go out:
+
+| When | To | What |
+|---|---|---|
+| Someone signs up | `SIGNUP_NOTIFY_EMAIL`, or every admin with an email address on their account when that is empty | Who is asking, as an individual or an organisation, the project, the sector, the expected GPU hours, and a link to their entry on **Approve users** |
+| An admin clicks **Approve** | The person approved | Their account is ready, with a link to sign in |
+
+**Revoke** sends nothing. Neither does a signup that is approved as it is
+created (an admin's own account) or one the self-approval email already
+covers. Without outgoing mail nothing is sent, the signup page says
+"Nothing to do until then" instead of "We'll email you", and admins find new
+requests on **Approve users** as before.
+
+Set `SIGNUP_NOTIFY_EMAIL` in `.env` (for example `admin@zai.co.zw`), run
+`scripts/05-jupyterhub.sh` and restart the hub. The log says
+`signup notices: on, new requests to …` or `signup notices are OFF`. A
+message that could not be sent is logged as
+`signup notice: email could not be sent`.
+
 ## What is stored
 
 Applications are kept in the hub database, in the table

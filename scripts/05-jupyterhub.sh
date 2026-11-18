@@ -99,8 +99,9 @@ elif kubectl -n jupyterhub get secret eco-payments >/dev/null 2>&1; then
 else
     echo "note: ECO_PAYMENTS_CLIENT_SECRET unset - online payment is off"
 fi
-# Outgoing email for password reset (hub-ext/zai_reset.py, docs/PASSWORD-RESET.md):
-# the site's address for the links, a from-address, and SMTP if not Resend.
+# Outgoing email for password reset (hub-ext/zai_reset.py, docs/PASSWORD-RESET.md)
+# and signup notices (hub-ext/zai_access.py): the site's address for the links,
+# a from-address, SMTP if not Resend, and where new requests go.
 # A run without SMTP_HOST and MAIL_FROM keeps an existing secret.
 if [ -n "${SMTP_HOST:-}${MAIL_FROM:-}" ] || ! kubectl -n jupyterhub get secret outgoing-mail >/dev/null 2>&1; then
     kubectl -n jupyterhub create secret generic outgoing-mail \
@@ -111,6 +112,7 @@ if [ -n "${SMTP_HOST:-}${MAIL_FROM:-}" ] || ! kubectl -n jupyterhub get secret o
         --from-literal=smtp-username="${SMTP_USERNAME:-}" \
         --from-literal=smtp-password="${SMTP_PASSWORD:-}" \
         --from-literal=smtp-security="${SMTP_SECURITY:-}" \
+        --from-literal=notify-email="${SIGNUP_NOTIFY_EMAIL:-}" \
         --dry-run=client -o yaml | kubectl apply -f -
 else
     echo "note: SMTP_HOST and MAIL_FROM unset - keeping the existing outgoing-mail secret"

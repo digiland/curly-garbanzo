@@ -94,7 +94,7 @@
         <li><div><strong>Open Welcome.ipynb</strong><span>It's in your home directory and checks your GPU live.</span></div></li>
         <li><div><strong>Try caimex</strong><span>File → New → Terminal, then <code>caimex</code>: an AI assistant for your whole project, already signed in.</span></div></li>
         {% else %}
-        <li><div><strong>An administrator approves your account</strong><span>Approval is manual, so this usually takes a little while. Nothing to do until then.</span></div></li>
+        <li><div><strong>An administrator approves your account</strong><span>Approval is manual, so this usually takes a little while. {% if zai_reset_on is defined and zai_reset_on %}We'll email you when it's done.{% else %}Nothing to do until then.{% endif %}</span></div></li>
         <li><div><strong>Sign in with the details you just chose</strong><span>Until you're approved, signing in says the account is waiting.</span></div></li>
         <li><div><strong>Pick a server size and start</strong><span>Your JupyterLab is ready in about fifteen seconds. <code>Welcome.ipynb</code> in your home directory walks you through it.</span></div></li>
         <li><div><strong>Try caimex when you're in</strong><span>File → New → Terminal, then <code>caimex</code>: an AI assistant for your whole project, already signed in.</span></div></li>
@@ -144,7 +144,7 @@
         <div class="z-field">
           <label for="password_input">Password
             <button type="button" class="z-tip" aria-label="About passwords"
-                    data-tip="At least 12 characters. A few unrelated words are easier to remember and stronger than a short mix of symbols. Common passwords are rejected, and sign-in locks for 15 minutes after 5 failed attempts.">?</button>
+                    data-tip="At least 12 characters. A few unrelated words are easier to remember and stronger than a short mix of symbols. Common passwords are rejected.">?</button>
           </label>
           <div class="z-input-wrap">
             <input id="password_input" class="z-input" type="password" name="signup_password"

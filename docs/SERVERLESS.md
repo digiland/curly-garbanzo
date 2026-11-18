@@ -54,8 +54,10 @@ zai endpoint create --owner alice --name echo --size gpu-18 --template pytorch \
 **Customers who create their own.** Members of the JupyterHub group named by
 `serverless.creators_group` in `hub-ext/catalog.yaml` (default
 `endpoint-creators`) create and delete their own endpoints, on the Endpoints
-page or with `zai endpoint create` without `--owner`. An administrator grants
-it at `/hub/admin` → Groups: create the group once, then add the user. Members
+page or with `zai endpoint create` without `--owner`. Users ask for this on
+the Endpoints page (see "Requesting access" below); an administrator can also
+add someone directly at `/hub/admin` → Manage Groups (at the bottom of the
+user list): create the group once, then add the user. Members
 can create endpoints only for themselves (their home, their credit), at most
 `serverless.max_endpoints_per_user` at a time. `max_workers_per_endpoint` and
 `max_gpus` apply as for any endpoint. Removing someone from the group stops
@@ -63,6 +65,21 @@ new creates within a minute (the gateway caches token checks for 60 s). Their
 existing endpoints keep running until deleted. An API token made with only the
 `custom:serverless` scope does not show the user's groups, so creating
 through the API needs a token with the default scopes.
+
+**Requesting access.** A user who cannot create endpoints sees a "Want to
+create your own endpoints?" box on the Endpoints page. They can say what they
+will run (optional, up to 500 characters) and press Request access. They have
+at most one request waiting and can cancel it. Administrators see waiting
+requests at the top of their Endpoints page, with the asker's balance and a
+link to their sign-up details, and a count in the nav ("Endpoints (1)").
+Approve adds the user to the creators group (making the group if needed).
+Decline needs a reason, which the user sees; they can then ask again. When
+outgoing mail is set up (the same settings as password reset, see
+PASSWORD-RESET.md), administrators get an email for each new request and the user
+gets one with the decision; without it, the page and the nav count are how
+both find out. Requests are kept in `zai_endpoint_requests` in the billing
+database and never deleted. With `creators_group` empty there is nothing to
+ask for: only administrators create endpoints, and the page says so.
 
 **The Endpoints page** (`/hub/endpoints`, in the nav) shows each endpoint's
 URL with copyable curl and Python examples, its queue, workers, spend this
