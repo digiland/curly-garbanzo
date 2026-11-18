@@ -127,6 +127,8 @@ serverless:
 # still runs JupyterLab, SSH and the port proxy; the template adds an app.
 # Arbitrary customer images are deliberately not offered: on a shared GPU node
 # an untrusted image is the largest risk this platform could take on.
+# `opens` names where the server lands (default "JupyterLab"), for the Open
+# button and the starting page; `next_step` is shown on Home while it runs.
 templates:
   - slug: pytorch
     name: "PyTorch + JupyterLab"
@@ -140,9 +142,11 @@ templates:
     image: local/zai-comfyui:cuda12-r3
     gpu_required: true
     default_url: /comfyui/
+    opens: ComfyUI
 
   - slug: vllm
     name: "vLLM inference server"
-    description: "OpenAI-compatible LLM serving. Run `zai-vllm <model>`, call it at /user/<you>/proxy/8000/v1."
+    description: "OpenAI-compatible LLM serving. Opens in JupyterLab, where you start a model with zai-vllm."
+    next_step: "Open a terminal in JupyterLab and run zai-vllm with a model name. It answers on port 8000, at /user/<you>/proxy/8000/v1."
     image: local/zai-vllm:cuda12-r3
     gpu_required: true

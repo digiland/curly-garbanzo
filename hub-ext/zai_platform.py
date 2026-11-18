@@ -108,6 +108,10 @@ class Catalog:
                 "image": t["image"],
                 "gpu_required": bool(t.get("gpu_required", False)),
                 "default_url": t.get("default_url"),
+                # What the Open button and the starting page call where the
+                # server lands, and what to do there first (optional).
+                "opens": str(t.get("opens") or "JupyterLab"),
+                "next_step": str(t.get("next_step") or ""),
                 "default": bool(t.get("default", False)),
             })
         if not self.templates:
@@ -169,6 +173,12 @@ class Catalog:
 
     def template(self, slug):
         return next((t for t in self.templates if t["slug"] == slug), None)
+
+    def template_of(self, spawner):
+        """The template a server was started with (the default if none was
+        picked), for its Open button and its starting page."""
+        opts = getattr(spawner, "user_options", None) or {}
+        return self.template(opts.get("template") or "") or next(t for t in self.templates if t["default"])
 
     def money(self, micros):
         sign = "-" if micros < 0 else ""
@@ -588,9 +598,11 @@ def options_form(spawner):
 </div>
 <script>
 (function () {{
-  var box = document.querySelector('.z-spawn'), out = document.getElementById('z-summary');
+  var box = document.querySelector('.z-spawn');
   var tpls = document.querySelectorAll('input[name=template]');
   function sync() {{
+    // Looked up here: #z-summary is in spawn.html, after this form.
+    var out = document.getElementById('z-summary');
     var r = document.querySelector('input[name=profile]:checked');
     var ok = r ? r.dataset.templates.split(' ') : [];
     tpls.forEach(function (t) {{ t.disabled = ok.indexOf(t.value) < 0; }});
@@ -617,7 +629,8 @@ def options_form(spawner):
   // /hub/spawn#<size> (the size cards on Home) picks that size, if it is free.
   var want = document.querySelector('input[name=profile][value="' + location.hash.slice(1).replace(/[^a-z0-9-]/gi, '') + '"]');
   if (location.hash && want && !want.disabled) want.checked = true;
-  sync();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sync);
+  else sync();
 }})();
 </script>"""
 
@@ -1219,6 +1232,8 @@ def configure(c):
     tv = dict(c.JupyterHub.get("template_vars", {}) or {})
     tv["zai_balance"] = nav_balance
     tv["zai_serverless"] = CATALOG.sv_enabled
+    # Called with the user, so it hands back the lookup itself.
+    tv["zai_template"] = lambda user: CATALOG.template_of
     c.JupyterHub.template_vars = tv
 
     handlers = list(c.JupyterHub.get("extra_handlers", []) or [])
