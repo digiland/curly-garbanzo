@@ -1,8 +1,10 @@
-# JupyterHub on single-node k3s, 7 x MIG 1g.18gb slices on one H200.
+# JupyterHub on single-node k3s, 4 x H200: GPU 0 = 7 x MIG 1g.18gb,
+# GPU 2 = 3 x MIG 2g.35gb, GPU 1 and GPU 3 whole.
 #
 # Per-user grants are deliberately far below what the box could give out: with
-# 7 slices, the worst case is 7 x memory.limit, and the guarantees are what the
-# scheduler actually reserves. See docs/OPERATIONS.md for the sizing arithmetic.
+# 10 GPU devices, the worst case is the sum of memory.limit over all of them, and
+# the guarantees are what the scheduler actually reserves. See
+# docs/OPERATIONS.md for the sizing arithmetic.
 
 hub:
   # Platform pods must survive a full disk (2026-11-11 outage: the kubelet
@@ -519,7 +521,7 @@ singleuser:
   # hub-ext/catalog.yaml by extraConfig 03-zai-platform; do not set
   # profileList here -- it would be overwritten.
 
-# Idle culling is mandatory: 7 slices total, an idle notebook holds one forever.
+# Idle culling is mandatory: GPU devices are few, an idle notebook holds one forever.
 cull:
   enabled: true
   users: false                    # stop idle servers only; never delete accounts or home dirs

@@ -52,7 +52,7 @@
         evtSource.close();
         progressBar.addClass('bg-danger');
         $('#progress-details').prop('open', true);
-        progressMessage.after('<p class="z-alert is-bad">The server didn\'t start. The event log below says why; if it mentions a GPU or "insufficient", all 7 slices are in use — try CPU-only or ask an administrator to stop an idle server.</p>');
+        progressMessage.after('<p class="z-alert is-bad">The server didn\'t start. The event log below says why; if it mentions a GPU or "insufficient", every GPU of that size is in use — try another size, CPU-only, or ask an administrator to stop an idle server.</p>');
       }
     };
     window._jupyterhub_page_loaded = true;

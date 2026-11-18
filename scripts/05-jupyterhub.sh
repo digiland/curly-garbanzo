@@ -136,7 +136,9 @@ helm repo update jupyterhub
 # The hub reads catalog.yaml and the module only at startup. Hashing them into
 # a pod annotation makes helm roll the hub exactly when they change. Running
 # servers are unaffected by a hub restart; the API is down for ~30 s.
-ZAI_SUM=$(cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/zai_myusage.py hub-ext/zai_payments.py hub-ext/zai_reset.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai | sha256sum | cut -c1-16)
+# templates/ is in the hash too: it ships as a ConfigMap, and without it a copy
+# edit alone leaves the hub running the old pages until something else restarts it.
+ZAI_SUM=$( { cat hub-ext/zai_platform.py hub-ext/zai_2fa.py hub-ext/zai_caimex.py hub-ext/zai_access.py hub-ext/zai_credit.py hub-ext/zai_myusage.py hub-ext/zai_payments.py hub-ext/zai_reset.py hub-ext/catalog.yaml ${ZAI_EXTRA_CATALOG:-} cli/zai; find templates -type f | sort | xargs cat; } | sha256sum | cut -c1-16)
 helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
   -f charts/jupyterhub-values.yaml ${EXTRA_VALUES:+-f $EXTRA_VALUES} \
