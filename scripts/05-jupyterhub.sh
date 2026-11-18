@@ -139,6 +139,7 @@ helm upgrade -i jupyterhub jupyterhub/jupyterhub \
   --namespace jupyterhub --version "$CHART_VERSION" \
   -f charts/jupyterhub-values.yaml ${EXTRA_VALUES:+-f $EXTRA_VALUES} \
   --set-string "hub.annotations.zai/platform-checksum=$ZAI_SUM" \
+  ${PUBLIC_HOSTNAME:+--set-string "singleuser.extraEnv.ZAI_PUBLIC_HOST=$PUBLIC_HOSTNAME"} \
   --wait --timeout 10m
 
 kubectl -n jupyterhub get pods

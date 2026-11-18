@@ -1,4 +1,4 @@
-# Cloud agents: one caimex server per user at https://notebooks.futurezim.com/agents/<user>/
+# Cloud agents: one caimex server per user at https://zai-aicompute.co.zw/agents/<user>/
 # JupyterHub's proxy sends /agents/ to agents-router, which strips /agents/<user> and
 # forwards to that user's pod. Each agent checks its own password or pairing token.
 apiVersion: v1
@@ -124,7 +124,7 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 129.212.180.103/32]
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 41.173.185.87/32]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

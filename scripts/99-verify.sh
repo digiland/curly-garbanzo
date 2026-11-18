@@ -2,10 +2,28 @@
 # Health check. Run after deploy, and after any reboot.
 set -uo pipefail
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-# Slice count comes from the layout scripts/11-gpu-layout.sh wrote, so this
-# check follows a re-slice instead of reporting it as a failure.
+# Slice count comes from the layout file. This box uses per-GPU entries
+# (MIG_LAYOUT_<n>) because MIG is on more than one physical GPU; the older
+# single MIG_LAYOUT/MIG_COUNT form is still honoured when no per-GPU entry exists.
+count_layout() { echo "$1" | tr ', ' '\n\n' | awk -F'*' 'NF{n+=($2==""?1:$2)} END{print n+0}'; }
 [ -f /etc/default/nvidia-mig-layout ] && . /etc/default/nvidia-mig-layout
-EXPECT="${MIG_COUNT:-$(echo "${MIG_LAYOUT:-1g.18gb*7}" | tr ', ' '\n\n' | awk -F'*' 'NF{n+=($2==""?1:$2)} END{print n}')}"
+
+EXPECT_MIG=0 MIG_GPUS=0 ANY_PERGPU=0
+for g in $(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null); do
+    var="MIG_LAYOUT_$g"; v="${!var:-}"
+    [ -n "$v" ] || continue
+    ANY_PERGPU=1
+    MIG_GPUS=$((MIG_GPUS + 1))
+    EXPECT_MIG=$((EXPECT_MIG + $(count_layout "$v")))
+done
+if [ "$ANY_PERGPU" -eq 0 ]; then
+    EXPECT_MIG="${MIG_COUNT:-$(count_layout "${MIG_LAYOUT:-1g.18gb*7}")}"
+    MIG_GPUS=1
+fi
+TOTAL_GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)
+EXPECT_FULL=$((TOTAL_GPUS - MIG_GPUS))
+# Devices the plugin should advertise: every MIG instance + every whole GPU.
+EXPECT=$((EXPECT_MIG + EXPECT_FULL))
 fail=0
 chk() { printf '  %-42s %s\n' "$1" "$2"; [ "$3" = ok ] || fail=1; }
 
@@ -17,16 +35,23 @@ NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
 
 if [ "${NODES:-1}" -le 1 ]; then
     n=$(nvidia-smi -L 2>/dev/null | grep -c 'MIG ' || echo 0)
-    chk "MIG instances" "$n / $EXPECT" "$([ "$n" = "$EXPECT" ] && echo ok || echo bad)"
+    chk "MIG instances" "$n / $EXPECT_MIG" "$([ "$n" = "$EXPECT_MIG" ] && echo ok || echo bad)"
 else
     printf '  %-42s %s\n' "cluster nodes" "$NODES"
 fi
 
-# Sum over every node, not just the first.
-a=$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' 2>/dev/null \
-    | awk '{s+=$1} END{print s+0}')
+# Sum every nvidia.com/* resource over every node. Under migStrategy=mixed this
+# is MIG slices *and* whole GPUs, not just nvidia.com/gpu.
+a=$(kubectl get nodes -o json 2>/dev/null | python3 -c '
+import json, sys
+tot = {}
+for n in json.load(sys.stdin)["items"]:
+    for k, v in n["status"]["allocatable"].items():
+        if k.startswith("nvidia.com/") and int(v):
+            tot[k] = tot.get(k, 0) + int(v)
+print(sum(tot.values()))' 2>/dev/null || echo 0)
 if [ "${NODES:-1}" -le 1 ]; then
-    chk "nvidia.com/gpu allocatable" "${a:-0} / $EXPECT" "$([ "${a:-0}" = "$EXPECT" ] && echo ok || echo bad)"
+    chk "nvidia.com/* allocatable" "${a:-0} / $EXPECT" "$([ "${a:-0}" = "$EXPECT" ] && echo ok || echo bad)"
 else
     chk "nvidia.com/gpu allocatable (cluster)" "${a:-0}" "$([ "${a:-0}" -ge 1 ] && echo ok || echo bad)"
 
@@ -47,10 +72,19 @@ else
     chk "shared storage is RWX" "${sc:-none} ${am:-}" "$([ "$am" = "ReadWriteMany" ] && echo ok || echo bad)"
 fi
 
-for d in hub proxy cloudflared; do
+for d in hub proxy; do
     s=$(kubectl -n jupyterhub get deploy "$d" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
     chk "deploy/$d ready" "${s:-0}" "$([ "${s:-0}" -ge 1 ] 2>/dev/null && echo ok || echo bad)"
 done
+# cloudflared may run in-cluster (scripts/06-tunnel.sh) or as a host systemd
+# service (this box). Either is fine as long as something is connected.
+cf=$(kubectl -n jupyterhub get deploy cloudflared -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+if [ "${cf:-0}" -ge 1 ] 2>/dev/null; then
+    chk "cloudflared" "in-cluster x$cf" ok
+else
+    h=$(systemctl is-active cloudflared 2>/dev/null || echo inactive)
+    chk "cloudflared" "host $h" "$([ "$h" = active ] && echo ok || echo bad)"
+fi
 
 p=$(kubectl -n nvidia-device-plugin get pods --no-headers 2>/dev/null | grep -c Running || echo 0)
 chk "device plugin running" "$p" "$([ "$p" -ge 1 ] && echo ok || echo bad)"

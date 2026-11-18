@@ -26,7 +26,9 @@ set -euo pipefail
 IMG="${USER_STORAGE_IMG:-/var/lib/k3s-user-storage.img}"
 MNT="${USER_STORAGE_MNT:-/var/lib/k3s-user-storage}"
 SIZE="${USER_STORAGE_SIZE:-150G}"
-OLD_PATH="/var/lib/rancher/k3s/storage"
+# Where the local-path provisioner used to write before this script repointed it.
+# Matches k3s's --data-dir, which on this box is on the big volume.
+OLD_PATH="${USER_STORAGE_OLD_PATH:-/var/lib/rancher/k3s/storage}"
 
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 
@@ -34,11 +36,15 @@ echo "==> pre-flight"
 command -v mkfs.xfs  >/dev/null || { echo "mkfs.xfs missing: apt install xfsprogs" >&2; exit 1; }
 command -v xfs_quota >/dev/null || { echo "xfs_quota missing: apt install xfsprogs" >&2; exit 1; }
 
-avail_kb=$(df --output=avail -k / | tail -1)
+# Reserve the space on whichever filesystem holds the image (not necessarily /:
+# on this box the image lives on the 12T data volume).
+img_dir=$(dirname "$IMG")
+mkdir -p "$img_dir"
+avail_kb=$(df --output=avail -k "$img_dir" | tail -1)
 want_kb=$(numfmt --from=iec "${SIZE}" | awk '{print int($1/1024)}')
 if [ ! -f "$IMG" ] && [ "$avail_kb" -lt $((want_kb + 20*1024*1024)) ]; then
-    echo "refusing: need ${SIZE} for the image plus 20G headroom on /" >&2
-    echo "available: $(df -h --output=avail / | tail -1)" >&2
+    echo "refusing: need ${SIZE} for the image plus 20G headroom on ${img_dir}" >&2
+    echo "available: $(df -h --output=avail "$img_dir" | tail -1)" >&2
     exit 1
 fi
 

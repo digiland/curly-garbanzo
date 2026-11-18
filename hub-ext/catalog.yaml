@@ -46,18 +46,26 @@ billing:
 # This is the 7 x 1g.18gb layout with the device plugin's migStrategy=single,
 # where every slice is plain `nvidia.com/gpu`. For a mixed layout see
 # scripts/11-gpu-layout.sh, which prints the block to paste here.
+# Device plugin runs migStrategy=mixed on this box (2 sliced GPUs + 2 whole), so
+# each size has its own resource: 18 GB -> mig-1g.18gb (GPU 0, x7),
+# 35 GB -> mig-2g.35gb (GPU 2, x3), whole H200 -> plain nvidia.com/gpu (GPU 1,3).
+# `kubectl get node -o jsonpath='{...allocatable}'` is the source of truth.
 gpu_pools:
-  nvidia.com/gpu: 7
+  nvidia.com/mig-1g.18gb: 7
+  nvidia.com/mig-2g.35gb: 3
+  nvidia.com/gpu: 2
 # What the start page calls each pool ("H200 slices free: 5 of 7"). Optional;
 # a pool not named here is called "GPU slices".
 gpu_pool_labels:
-  nvidia.com/gpu: "H200 slices"
+  nvidia.com/mig-1g.18gb: "H200 18 GB slices"
+  nvidia.com/mig-2g.35gb: "H200 35 GB slices"
+  nvidia.com/gpu: "whole H200"
 
 sizes:
   - slug: gpu-18
     name: "GPU · 18 GB"
     description: "One H200 MIG slice. 12 GB RAM, 2 CPU. Notebooks, fine-tuning small models, 7B inference in 4-bit."
-    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 18}
+    gpu: {resource: nvidia.com/mig-1g.18gb, count: 1, vram_gb: 18}
     cpu: 2
     cpu_guarantee: 0.5
     memory: 12G
@@ -68,12 +76,32 @@ sizes:
   - slug: gpu-18-highmem
     name: "GPU · 18 GB, high memory"
     description: "Same slice with 24 GB RAM and 4 CPU, for datasets held in host memory."
-    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 18}
+    gpu: {resource: nvidia.com/mig-1g.18gb, count: 1, vram_gb: 18}
     cpu: 4
     cpu_guarantee: 1
     memory: 24G
     memory_guarantee: 2G
     price_per_hour: 1.76         # the 18 GB slice x 0.69/0.49, the old ratio ($1.52 before VAT)
+
+  - slug: gpu-35
+    name: "GPU · 35 GB"
+    description: "MIG 2g slice of an H200. 24 GB RAM, 4 CPU. Mid-size fine-tuning, 13B models in 4-bit, larger datasets in memory."
+    gpu: {resource: nvidia.com/mig-2g.35gb, count: 1, vram_gb: 35}
+    cpu: 4
+    cpu_guarantee: 1
+    memory: 24G
+    memory_guarantee: 2G
+    price_per_hour: 2.50         # two 18 GB slices ($2.16 before VAT)
+
+  - slug: gpu-141
+    name: "GPU · whole H200"
+    description: "A full 141 GB H200, no MIG. 96 GB RAM, 16 CPU. Large model serving, multi-GPU-free training, anything that needs the whole card."
+    gpu: {resource: nvidia.com/gpu, count: 1, vram_gb: 141}
+    cpu: 16
+    cpu_guarantee: 4
+    memory: 96G
+    memory_guarantee: 8G
+    price_per_hour: 7.28         # $6.30 before VAT, the whole-GPU rate
 
   - slug: cpu
     name: "CPU only"

@@ -1,0 +1,17 @@
+# Per-GPU MIG layout for vm-languageslabvm (4x H200 141GB).
+# Applied at boot by nvidia-mig-layout-multi.service ->
+#   /usr/local/bin/mig-setup-multi.sh
+#
+# MIG mode itself survives a reboot; the GPU/compute *instances* do not, hence
+# this file. A GPU with no MIG_LAYOUT_<n> line is left as a whole GPU.
+#
+# Matching Kubernetes view (device plugin, migStrategy=mixed):
+#   GPU 0 -> 7 x nvidia.com/mig-1g.18gb
+#   GPU 2 -> 3 x nvidia.com/mig-2g.35gb
+#   GPU 1, GPU 3 -> nvidia.com/gpu
+#
+# Do NOT run scripts/01-mig.sh or scripts/11-gpu-layout.sh on this box: both
+# drive GPU 0 only and would drop GPU 2's slices.
+
+MIG_LAYOUT_0="1g.18gb*7"
+MIG_LAYOUT_2="2g.35gb*3"

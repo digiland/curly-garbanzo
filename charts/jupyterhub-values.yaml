@@ -361,7 +361,12 @@ hub:
 
 proxy:
   service:
-    type: ClusterIP                 # servicelb is disabled; cloudflared reaches this in-cluster
+    # Host-level cloudflared (not in-cluster) cannot resolve
+    # proxy-public.jupyterhub.svc.cluster.local, so publish the proxy on a fixed
+    # NodePort instead. Cloudflare "Published application" URL = http://localhost:30080
+    type: NodePort
+    nodePorts:
+      http: 30080
 
 singleuser:
   # Notebooks run customer code. The chart's default "any public IP" egress
@@ -377,7 +382,7 @@ singleuser:
       - to:
           - ipBlock:
               cidr: 0.0.0.0/0
-              except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 129.212.180.103/32]
+              except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 41.173.185.87/32]
   image:
     name: local/pytorch-caimex       # pytorch-notebook + caimex CLI, SSH, port proxy
     tag: cuda12-r3                   # the default; templates in hub-ext/catalog.yaml pick their own
@@ -393,7 +398,9 @@ singleuser:
           key: api-key
     CAIMEX_MODEL: "caimex/Caimex2/deepseek-ai/DeepSeek-V4-Flash"
     # Fills the hostname into ~/.zai/README.md (SSH, ports, API instructions).
-    ZAI_PUBLIC_HOST: "notebooks.futurezim.com"
+    # Overridden from PUBLIC_HOSTNAME in .env by scripts/05-jupyterhub.sh; this is
+    # only the fallback if the script is run without it.
+    ZAI_PUBLIC_HOST: "zai-aicompute.co.zw"
     # `import zai_serverless` in a notebook, to try a handler before it becomes
     # an endpoint. The module is the serverless-runtime ConfigMap mounted below.
     PYTHONPATH: /opt/zai-runtime

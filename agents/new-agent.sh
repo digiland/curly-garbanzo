@@ -4,7 +4,9 @@
 set -euo pipefail
 user="${1:?usage: new-agent.sh <user>}"
 [[ "$user" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || { echo "user must be lowercase letters, digits, dashes" >&2; exit 1; }
-base="https://notebooks.futurezim.com/agents/$user"
+# Public hostname: PUBLIC_HOSTNAME if exported, else this deployment's domain.
+public_host="${PUBLIC_HOSTNAME:-zai-aicompute.co.zw}"
+base="https://${public_host}/agents/$user"
 here="$(cd "$(dirname "$0")" && pwd)"
 
 # Keep an existing password so paired phones stay signed in.

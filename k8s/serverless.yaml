@@ -185,7 +185,7 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 129.212.180.103/32]
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 41.173.185.87/32]
 ---
 # The gateway serves the internet and may create pods. Without this, anyone
 # who took it over could create a privileged pod or one mounting the node's

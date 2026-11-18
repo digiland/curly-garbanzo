@@ -3,7 +3,9 @@
 #   ./pair-agent.sh alice
 set -euo pipefail
 user="${1:?usage: pair-agent.sh <user>}"
-base="https://notebooks.futurezim.com/agents/$user"
+# Public hostname: PUBLIC_HOSTNAME if exported, else this deployment's domain.
+public_host="${PUBLIC_HOSTNAME:-zai-aicompute.co.zw}"
+base="https://${public_host}/agents/$user"
 password="$(kubectl -n agents get secret "agent-$user" -o jsonpath='{.data.password}' | base64 -d)"
 code="$(printf 'Authorization: Bearer %s\n' "$password" |
   kubectl -n agents exec -i "deploy/agent-$user" -- curl -fsS -X POST -H @- http://127.0.0.1:4096/api/pair |

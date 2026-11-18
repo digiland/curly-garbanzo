@@ -2,7 +2,7 @@
 
 Each user gets their own caimex agent server, reached by the caimex mobile app at:
 
-    https://notebooks.futurezim.com/agents/<user>
+    https://zai-aicompute.co.zw/agents/<user>
 
 ```
 phone ──HTTPS──> Cloudflare Tunnel ──> JupyterHub proxy (proxy-public)
@@ -53,7 +53,7 @@ The app contract (API, auth, events) is in the caimex-code repo.
 ## Checks
 
 ```bash
-curl -s https://notebooks.futurezim.com/agents/alice/api/info   # 401 = reachable, needs login
+curl -s https://zai-aicompute.co.zw/agents/alice/api/info   # 401 = reachable, needs login
 kubectl -n agents get pods
 kubectl -n agents logs deploy/agent-alice
 ```

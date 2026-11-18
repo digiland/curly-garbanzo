@@ -1,0 +1,19 @@
+[Unit]
+Description=Recreate per-GPU NVIDIA MIG layout (/etc/default/nvidia-mig-layout MIG_LAYOUT_<n>)
+Documentation=file:///usr/local/bin/mig-setup-multi.sh
+# Normal dependencies: guarantees sysinit/udev have run and /dev/nvidia* exist.
+After=basic.target nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+# k3s must not enumerate GPUs before the layout is rebuilt.
+Before=k3s.service containerd.service docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/mig-setup-multi.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
